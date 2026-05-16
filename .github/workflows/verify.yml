@@ -1,0 +1,43 @@
+name: verify
+
+# WS-12 Phase-1 verification gate. The static-and-self-tests half of the
+# QVE runbook. The live-fleet half (real workers, real SSH) lives in
+# hermes-setup as the fleet-usecase-* skills.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: fleetctl verify
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go build ./...
+        run: go build ./...
+
+      - name: go test -race ./...
+        run: go test -race ./...
+
+      - name: skill manifest drift gate
+        run: go run ./cmd/fleetctl gen-skills --check
+
+      - name: fleetctl verify --json
+        run: go run ./cmd/fleetctl verify --json | tee verify.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-report
+          path: verify.json
