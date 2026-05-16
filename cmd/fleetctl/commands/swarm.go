@@ -195,14 +195,15 @@ func makeSwarmRunner(timeout time.Duration) orchestrator.LeafRunner {
 		}
 		runCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
+		start := time.Now()
 		res, err := client.Run(runCtx, cmdStr)
-		dur := time.Since(time.Now()) // placeholder; real duration tracked by orchestrator
-		_ = dur
+		durMs := time.Since(start).Milliseconds()
 		if err != nil {
 			return []ledger.Entry{{
 				Phase:      "leaf",
 				Action:     "ssh:" + target.String(),
 				Result:     ledger.ResultError,
+				DurationMs: durMs,
 				StderrTail: truncateAction(err.Error()),
 			}}, err
 		}
@@ -210,7 +211,7 @@ func makeSwarmRunner(timeout time.Duration) orchestrator.LeafRunner {
 			Phase:      "leaf",
 			Action:     "ssh:" + target.String(),
 			Result:     ledger.ResultOK,
-			DurationMs: 0,
+			DurationMs: durMs,
 		}
 		if res.ExitCode != 0 {
 			entry.Result = ledger.ResultError
