@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Skill manifest drift gate
+        run: go run ./cmd/fleetctl gen-skills --check
+
+      - name: Build darwin/arm64
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          go build \
+            -ldflags "-s -w -X github.com/owera/owera-fleet/cmd/fleetctl/commands.Version=${GITHUB_REF_NAME}" \
+            -o fleetctl-darwin-arm64 \
+            ./cmd/fleetctl
+
+      - name: Build darwin/amd64
+        env:
+          GOOS: darwin
+          GOARCH: amd64
+        run: |
+          go build \
+            -ldflags "-s -w -X github.com/owera/owera-fleet/cmd/fleetctl/commands.Version=${GITHUB_REF_NAME}" \
+            -o fleetctl-darwin-amd64 \
+            ./cmd/fleetctl
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            fleetctl-darwin-arm64
+            fleetctl-darwin-amd64
+          generate_release_notes: true
+          draft: false
+          prerelease: false
