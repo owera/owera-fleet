@@ -95,10 +95,43 @@ func TestAuthenticate(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 
+	// Token with the same length but one bit flipped — the constant-time
+	// path must still return ErrNotFound rather than producing a panic.
+	if len(p.Token) > 0 {
+		mutated := []byte(p.Token)
+		mutated[0] ^= 0x01
+		if _, err := s.Authenticate(string(mutated)); !errors.Is(err, pairing.ErrNotFound) {
+			t.Errorf("expected ErrNotFound for length-matched mutated token, got %v", err)
+		}
+	}
+
 	// Revoked token.
 	_ = s.Revoke(p.ID)
 	_, err = s.Authenticate(p.Token)
 	if !errors.Is(err, pairing.ErrNotFound) {
 		t.Errorf("revoked token should not authenticate, got %v", err)
+	}
+}
+
+// TestRejectsTraversalIDs — Get/Revoke must refuse ids that contain path
+// separators or ".." segments. Pre-fix, an id like "../target" would join
+// into the pairings directory and reach adjacent files on disk.
+func TestRejectsTraversalIDs(t *testing.T) {
+	s, _ := pairing.NewStore(t.TempDir())
+	for _, badID := range []string{
+		"../escape",
+		"sub/escape",
+		"with\\backslash",
+		"contains:colon",
+		"",
+	} {
+		if _, err := s.Get(badID); err == nil {
+			t.Errorf("Get(%q): expected error, got nil", badID)
+		} else if !errors.Is(err, pairing.ErrInvalidID) {
+			t.Errorf("Get(%q): expected ErrInvalidID, got %v", badID, err)
+		}
+		if err := s.Revoke(badID); err == nil || !errors.Is(err, pairing.ErrInvalidID) {
+			t.Errorf("Revoke(%q): expected ErrInvalidID, got %v", badID, err)
+		}
 	}
 }

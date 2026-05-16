@@ -11,6 +11,7 @@ package pairing
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,7 +26,7 @@ import (
 // Pairing is the persisted record for one DM pairing.
 type Pairing struct {
 	ID        string    `json:"id"`        // opaque unique identifier
-	Token     string    `json:"token"`     // secret bearer token (64 rand bytes, base64url)
+	Token     string    `json:"token"`     // secret bearer token (48 rand bytes, base64url-encoded, 64 chars)
 	Label     string    `json:"label"`     // human-readable name
 	CreatedAt time.Time `json:"created_at"`
 	RevokedAt time.Time `json:"revoked_at,omitempty"`
@@ -121,13 +122,24 @@ func (s *Store) List() ([]*Pairing, error) {
 }
 
 // Authenticate returns the pairing that owns token, or ErrNotFound if none.
+// Token comparison is constant-time per pairing to avoid leaking token-prefix
+// information through wall-clock timing.
 func (s *Store) Authenticate(token string) (*Pairing, error) {
 	all, err := s.List()
 	if err != nil {
 		return nil, err
 	}
+	tokenBytes := []byte(token)
 	for _, p := range all {
-		if p.Active && p.Token == token {
+		if !p.Active {
+			continue
+		}
+		stored := []byte(p.Token)
+		// ConstantTimeCompare requires equal lengths; pad-then-compare so
+		// the per-pairing branch time doesn't reveal whether the candidate
+		// matched any pairing's length.
+		if len(stored) == len(tokenBytes) &&
+			subtle.ConstantTimeCompare(stored, tokenBytes) == 1 {
 			return p, nil
 		}
 	}
@@ -137,7 +149,28 @@ func (s *Store) Authenticate(token string) (*Pairing, error) {
 // ErrNotFound is returned when no pairing matches the request.
 var ErrNotFound = errors.New("pairing: not found")
 
+// ErrInvalidID is returned when an id contains path separators, traversal
+// segments, or other characters that would let it escape the pairings dir.
+var ErrInvalidID = errors.New("pairing: invalid id")
+
+// validatePairingID rejects ids that could traverse out of the pairings
+// directory or collide with reserved names. randomID() produces base64url
+// strings that never trip these checks; the validation is for ids that come
+// from external callers (CLI args, API requests).
+func validatePairingID(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidID)
+	}
+	if strings.ContainsAny(id, `/\:`) || strings.Contains(id, "..") {
+		return fmt.Errorf("%w: %q", ErrInvalidID, id)
+	}
+	return nil
+}
+
 func (s *Store) read(id string) (*Pairing, error) {
+	if err := validatePairingID(id); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(s.dir, id+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -151,6 +184,9 @@ func (s *Store) read(id string) (*Pairing, error) {
 }
 
 func (s *Store) write(p *Pairing) error {
+	if err := validatePairingID(p.ID); err != nil {
+		return err
+	}
 	path := filepath.Join(s.dir, p.ID+".json")
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
