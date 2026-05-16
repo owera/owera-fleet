@@ -188,9 +188,19 @@ var ErrHashMismatch = errors.New("configsync: file hash mismatch")
 // against the verifier's public key, and checks every file's hash. Returns the
 // manifest on success.
 func (v *Verifier) Verify(bundlePath string) (*Manifest, error) {
+	m, _, err := v.verifyContent(bundlePath)
+	return m, err
+}
+
+// verifyContent reads the bundle once, verifies the signature, validates every
+// manifest path is a clean relative path, and returns the per-file content
+// map keyed by manifest path alongside the manifest itself. Apply consumes
+// this map directly so it never re-reads the bundle from disk — closing the
+// TOCTOU window between verification and extraction.
+func (v *Verifier) verifyContent(bundlePath string) (*Manifest, map[string][]byte, error) {
 	f, err := os.Open(bundlePath)
 	if err != nil {
-		return nil, fmt.Errorf("configsync: open bundle: %w", err)
+		return nil, nil, fmt.Errorf("configsync: open bundle: %w", err)
 	}
 	defer f.Close()
 
@@ -204,11 +214,11 @@ func (v *Verifier) Verify(bundlePath string) (*Manifest, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("configsync: read tar: %w", err)
+			return nil, nil, fmt.Errorf("configsync: read tar: %w", err)
 		}
 		data, err := io.ReadAll(tr)
 		if err != nil {
-			return nil, fmt.Errorf("configsync: read entry %s: %w", hdr.Name, err)
+			return nil, nil, fmt.Errorf("configsync: read entry %s: %w", hdr.Name, err)
 		}
 		switch hdr.Name {
 		case manifestName:
@@ -216,78 +226,110 @@ func (v *Verifier) Verify(bundlePath string) (*Manifest, error) {
 		case signatureName:
 			sigBytes = data
 		default:
+			// Reject duplicate entries — a second copy of the same name with
+			// different content would shadow the verified first copy.
+			if _, dup := fileData[hdr.Name]; dup {
+				return nil, nil, fmt.Errorf("configsync: duplicate tar entry %s", hdr.Name)
+			}
 			fileData[hdr.Name] = data
 		}
 	}
 
 	if manifestBytes == nil || sigBytes == nil {
-		return nil, fmt.Errorf("configsync: bundle missing manifest or signature")
+		return nil, nil, fmt.Errorf("configsync: bundle missing manifest or signature")
 	}
 	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigBytes)))
 	if err != nil {
-		return nil, fmt.Errorf("configsync: decode signature: %w", err)
+		return nil, nil, fmt.Errorf("configsync: decode signature: %w", err)
 	}
 	if !ed25519.Verify(v.pub, manifestBytes, sig) {
-		return nil, ErrBadSignature
+		return nil, nil, ErrBadSignature
 	}
 
 	var m Manifest
 	if err := json.Unmarshal(manifestBytes, &m); err != nil {
-		return nil, fmt.Errorf("configsync: parse manifest: %w", err)
+		return nil, nil, fmt.Errorf("configsync: parse manifest: %w", err)
 	}
 
+	// Build the verified content map. Tar entries not listed in the
+	// manifest are dropped here and never reach Apply, even though
+	// the tar may contain them (signature only covers the manifest).
+	verified := make(map[string][]byte, len(m.Files))
 	for _, mf := range m.Files {
+		if err := validateManifestPath(mf.Path); err != nil {
+			return nil, nil, err
+		}
 		data, ok := fileData[mf.Path]
 		if !ok {
-			return nil, fmt.Errorf("configsync: bundle missing %s", mf.Path)
+			return nil, nil, fmt.Errorf("configsync: bundle missing %s", mf.Path)
 		}
 		got := "sha256:" + hex.EncodeToString(sha256Sum(data))
 		if got != mf.Hash {
-			return nil, fmt.Errorf("%w: %s: %s != %s", ErrHashMismatch, mf.Path, got, mf.Hash)
+			return nil, nil, fmt.Errorf("%w: %s: %s != %s", ErrHashMismatch, mf.Path, got, mf.Hash)
+		}
+		verified[mf.Path] = data
+	}
+	return &m, verified, nil
+}
+
+// validateManifestPath rejects absolute paths, backslashes, colons, and any
+// path containing "..", "." segments, or empty segments. Manifest paths on
+// the wire always use "/" separators (the packer runs filepath.Rel on the
+// gateway, which produces "/" on darwin); rejecting backslash defends
+// against bundles authored on other platforms.
+func validateManifestPath(p string) error {
+	if p == "" {
+		return fmt.Errorf("configsync: manifest entry has empty path")
+	}
+	if strings.ContainsAny(p, `\:`) {
+		return fmt.Errorf("configsync: manifest path contains invalid char: %q", p)
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return fmt.Errorf("configsync: manifest path is absolute: %q", p)
+	}
+	if cleaned := filepath.ToSlash(filepath.Clean(p)); cleaned != p {
+		return fmt.Errorf("configsync: manifest path is not canonical: %q (would become %q)", p, cleaned)
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return fmt.Errorf("configsync: manifest path has bad segment %q in %q", seg, p)
 		}
 	}
-	return &m, nil
+	return nil
 }
 
 // Apply unpacks a verified bundle into destDir. Verification is run first;
-// if it fails, no files are written.
+// if it fails, no files are written. Apply uses the in-memory content map
+// captured during verification — it does not re-read the bundle from disk,
+// so the bundle can be removed or replaced between Verify and Apply without
+// affecting what gets written.
 func (v *Verifier) Apply(bundlePath, destDir string) (*Manifest, error) {
-	m, err := v.Verify(bundlePath)
+	m, content, err := v.verifyContent(bundlePath)
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return nil, fmt.Errorf("configsync: mkdir dest: %w", err)
 	}
-
-	// Re-open the tar to extract the file contents (we already validated hashes).
-	f, err := os.Open(bundlePath)
+	destAbs, err := filepath.Abs(destDir)
 	if err != nil {
-		return nil, fmt.Errorf("configsync: re-open bundle: %w", err)
+		return nil, fmt.Errorf("configsync: resolve dest: %w", err)
 	}
-	defer f.Close()
 
-	tr := tar.NewReader(f)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
+	for _, mf := range m.Files {
+		outPath := filepath.Join(destAbs, filepath.FromSlash(mf.Path))
+		// Defence-in-depth: validateManifestPath already rejected "..",
+		// but re-check the resolved path stays under destAbs.
+		rel, err := filepath.Rel(destAbs, outPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("configsync: refusing to write outside dest: %s", mf.Path)
 		}
-		if err != nil {
-			return nil, fmt.Errorf("configsync: read tar: %w", err)
-		}
-		if hdr.Name == manifestName || hdr.Name == signatureName {
-			continue
-		}
-		outPath := filepath.Join(destDir, hdr.Name)
 		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 			return nil, fmt.Errorf("configsync: mkdir: %w", err)
 		}
-		data, err := io.ReadAll(tr)
-		if err != nil {
-			return nil, fmt.Errorf("configsync: read %s: %w", hdr.Name, err)
-		}
-		if err := os.WriteFile(outPath, data, fs.FileMode(hdr.Mode).Perm()); err != nil {
+		// Mode comes from the signed manifest, never from a tar header.
+		mode := fs.FileMode(mf.Mode).Perm()
+		if err := os.WriteFile(outPath, content[mf.Path], mode); err != nil {
 			return nil, fmt.Errorf("configsync: write %s: %w", outPath, err)
 		}
 	}
