@@ -57,6 +57,11 @@ func NewStore(dir string) (*Store, error) {
 
 // Write persists a marker. The Pipeline and Step fields are used as the
 // storage key; if they are empty, an error is returned.
+//
+// Write is crash-safe: it writes to a temp file, fsyncs the temp file,
+// renames into place, then fsyncs the containing directory. A crash at any
+// point leaves either the old marker (no change) or the new one — never a
+// half-written marker that would silently re-trigger the step on restart.
 func (s *Store) Write(m Marker) error {
 	if m.Pipeline == "" || m.Step == "" {
 		return errors.New("markers: pipeline and step are required")
@@ -65,7 +70,8 @@ func (s *Store) Write(m Marker) error {
 		m.CompletedAt = time.Now().UTC()
 	}
 	path := s.path(m.Pipeline, m.Step)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("markers: mkdir: %w", err)
 	}
 	data, err := json.MarshalIndent(m, "", "  ")
@@ -73,10 +79,32 @@ func (s *Store) Write(m Marker) error {
 		return fmt.Errorf("markers: marshal: %w", err)
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("markers: write: %w", err)
+	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("markers: open tmp: %w", err)
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("markers: write tmp: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("markers: fsync tmp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("markers: close tmp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("markers: rename: %w", err)
+	}
+	if dirF, derr := os.Open(dir); derr == nil {
+		_ = dirF.Sync()
+		_ = dirF.Close()
+	}
+	return nil
 }
 
 // Read returns the stored marker for (pipeline, step), or ErrNotFound.

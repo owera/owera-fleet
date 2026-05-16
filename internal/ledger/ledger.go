@@ -150,13 +150,36 @@ func (l *Ledger) Append(taskID string, e Entry) error {
 	if err := os.MkdirAll(l.dir, 0o700); err != nil {
 		return fmt.Errorf("ledger: mkdir: %w", err)
 	}
+	_, statErr := os.Stat(path)
+	firstWrite := errors.Is(statErr, os.ErrNotExist)
+
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("ledger: open %s: %w", path, err)
 	}
-	defer f.Close()
-	_, err = f.Write(append(line, '\n'))
-	return err
+	if _, werr := f.Write(append(line, '\n')); werr != nil {
+		_ = f.Close()
+		return werr
+	}
+	// fsync the file so the appended entry survives a crash before the
+	// page cache flushes. Without this, a power loss between write and
+	// kernel writeback silently truncates the ledger tail.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("ledger: fsync %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("ledger: close %s: %w", path, err)
+	}
+	// On first create the new dirent also needs to reach disk. Skip on
+	// append-to-existing for cost; the file's inode is already durable.
+	if firstWrite {
+		if dirF, derr := os.Open(l.dir); derr == nil {
+			_ = dirF.Sync()
+			_ = dirF.Close()
+		}
+	}
+	return nil
 }
 
 // ErrBadSignature is returned by Read when an entry's signature does not verify.

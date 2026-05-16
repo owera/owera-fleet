@@ -2,6 +2,7 @@ package budget_test
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/owera/owera-fleet/internal/budget"
@@ -72,5 +73,58 @@ func TestDefaultLimits(t *testing.T) {
 	}
 	if st.MaxCostCents != budget.DefaultDailyCostCents {
 		t.Errorf("MaxCostCents = %d", st.MaxCostCents)
+	}
+}
+
+// TestConsumeConcurrentRespectsCap — N goroutines race to Consume against a
+// cap of M (M < N). Pre-fix (no flock around the read-modify-write) this
+// races: multiple goroutines pass the Requests<MaxRequests check, both
+// commit, and the final Requests count exceeds MaxRequests. Post-fix, the
+// per-pairing flock serializes Consume, so exactly M succeed and N-M fail
+// with ErrRateLimitExceeded.
+func TestConsumeConcurrentRespectsCap(t *testing.T) {
+	const N = 32
+	const M = 10
+	s, err := budget.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.SetLimits("race", M, 100_000); err != nil {
+		t.Fatalf("SetLimits: %v", err)
+	}
+
+	var ok, rejected int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := s.Consume("race", 1)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				ok++
+			} else if errors.Is(err, budget.ErrRateLimitExceeded) {
+				rejected++
+			} else {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if ok != M {
+		t.Errorf("ok = %d, want %d (cap exceeded under contention — flock not serializing)", ok, M)
+	}
+	if rejected != N-M {
+		t.Errorf("rejected = %d, want %d", rejected, N-M)
+	}
+	st, err := s.Get("race")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if st.Requests != M {
+		t.Errorf("final Requests = %d, want %d (state corruption under contention)", st.Requests, M)
 	}
 }
