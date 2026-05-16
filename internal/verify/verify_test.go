@@ -153,15 +153,33 @@ func TestSelfChecksAllPass(t *testing.T) {
 
 func TestDefaultChecksRepoOverrideValidatesGoMod(t *testing.T) {
 	// Passing a dir without go.mod surfaces as a clean per-check failure,
-	// not a panic.
+	// not a panic. Shell-out checks are flagged Optional+failing in this
+	// configuration so Report.OK still reflects the passing self-checks —
+	// this is the documented "fleetctl verify on a deployed worker
+	// without a source tree" scenario.
 	empty := t.TempDir()
 	checks := DefaultChecks(empty)
 	r := RunAll(context.Background(), checks, 4)
-	// Shell-out checks should fail; self-checks should pass.
+
 	for _, res := range r.Results {
-		if strings.HasSuffix(res.ID, "_self") && res.Status != StatusPass {
-			t.Errorf("self-check %s failed unexpectedly: %s", res.ID, res.ErrMsg)
+		if strings.HasSuffix(res.ID, "_self") {
+			if res.Status != StatusPass {
+				t.Errorf("self-check %s failed unexpectedly: %s", res.ID, res.ErrMsg)
+			}
+			continue
 		}
+		// Shell-out checks: must be Optional and must have failed,
+		// since the dummy repo dir has no go.mod.
+		if !res.Optional {
+			t.Errorf("shell-out check %s should be Optional when repo root has no go.mod (would block OK gate on deployed workers)", res.ID)
+		}
+		if res.Status != StatusFail {
+			t.Errorf("shell-out check %s: expected fail, got %s", res.ID, res.Status)
+		}
+	}
+	if !r.OK {
+		t.Errorf("Report.OK should be true (only Optional shell-out checks failed): Passed=%d Failed=%d Skipped=%d",
+			r.Passed, r.Failed, r.Skipped)
 	}
 }
 

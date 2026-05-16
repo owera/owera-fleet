@@ -259,13 +259,15 @@ func resolveRepoRoot(override string) (string, error) {
 
 // shellOutCheck builds a Check that execs an external command with cwd set
 // to the resolved repo root. If repoErr is non-nil (no go.mod found and no
-// override supplied) the check is marked failing with a clear evidence
-// note; this surfaces "where am I running from" as data rather than as a
-// crash.
+// override supplied) the check is marked Optional+failing so the rest of
+// the gate still passes — this is the documented "verify on a deployed
+// worker without a source tree" case. When a repo IS resolvable, repoErr
+// is nil and the check participates in the OK gate normally.
 func shellOutCheck(id, name, repoRoot string, repoErr error, argv []string, evidenceOK string) Check {
 	return Check{
-		ID:   id,
-		Name: name,
+		ID:       id,
+		Name:     name,
+		Optional: repoErr != nil,
 		Run: func(ctx context.Context) (string, error) {
 			if repoErr != nil {
 				return "", repoErr
