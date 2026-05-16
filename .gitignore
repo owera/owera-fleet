@@ -29,6 +29,13 @@ go.work.sum
 /tmp/
 /.runtime/
 
+# In-tree git worktrees (specialized-agent sandboxes)
+/.worktrees/
+
+# Plan source-of-truth doc lives at /Users/claw3/owera-fleet root but is
+# kept out of git so it can be regenerated/edited freely between waves.
+/knowing-all-you-now-calm-leaf.md
+
 # Coverage
 coverage.out
 coverage.html
