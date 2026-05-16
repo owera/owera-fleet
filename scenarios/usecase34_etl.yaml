@@ -1,0 +1,45 @@
+name: usecase34_etl
+tier: 3
+description: |
+  v2 §3.4 ETL pipeline use case — the markers primitive has no CLI surface
+  yet, so this scenario synthesizes the lifecycle via a shell harness:
+  produce a known input, hash it, confirm the metrics surface is alive,
+  and verify the ledger remained signature-valid across the run.
+vars:
+  ETL_INPUT: /tmp/owera-fleet-usecase34-etl-input.txt
+
+steps:
+  # 1. Create a temp input file with deterministic content.
+  - name: etl-prepare-input
+    run: |
+      printf 'owera-fleet usecase34 etl payload\n' > ${ETL_INPUT}
+      test -s ${ETL_INPUT}
+    expect:
+      exit: 0
+
+  # 2. Hash the input — proves the harness can shell out for awk/shasum
+  # under the runner's `sh -c` wrapper.
+  - name: etl-hash-input
+    run: sh -c "shasum -a 256 ${ETL_INPUT} | awk '{print \$1}'"
+    expect:
+      exit: 0
+      stdout_contains: "a"
+
+  # 3. Metrics surface is alive and emits the documented counter family.
+  - name: metrics-scrape-counter-family
+    run: bin/fleetctl metrics --scrape
+    expect:
+      exit: 0
+      stdout_contains: "# TYPE fleet_actions_total counter"
+
+  # 4. Ledger integrity check across the run — no mutation, must stay clean.
+  - name: ledger-verify-post-run
+    run: bin/fleetctl ledger verify
+    expect:
+      exit: 0
+
+  # 5. Cleanup the synthetic input file.
+  - name: etl-cleanup
+    run: rm -f ${ETL_INPUT}
+    expect:
+      exit: 0

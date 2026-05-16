@@ -1,0 +1,48 @@
+name: usecase32_marketing_swarm
+tier: 3
+description: |
+  v2 §3.2 marketing fan-out use case — primitive-level exercise of the
+  `fleetctl swarm` CLI surface. Swarm has no --dry-run flag and requires
+  live SSH targets to do real work, so this scenario stays at the
+  help-text-and-ledger-integrity layer; the live fan-out path is exercised
+  by the fleet-usecase-demos Layer 3 pass against real workers.
+
+steps:
+  # 1. Help text mentions every advertised swarm flag.
+  - name: swarm-help-mentions-all
+    run: bin/fleetctl swarm --help
+    expect:
+      exit: 0
+      stdout_contains: "--all"
+
+  - name: swarm-help-mentions-target
+    run: bin/fleetctl swarm --help
+    expect:
+      exit: 0
+      stdout_contains: "--target"
+
+  - name: swarm-help-mentions-parallel
+    run: bin/fleetctl swarm --help
+    expect:
+      exit: 0
+      stdout_contains: "--parallel"
+
+  - name: swarm-help-mentions-retry
+    run: bin/fleetctl swarm --help
+    expect:
+      exit: 0
+      stdout_contains: "--retry"
+
+  # 2. Empty target set without --all / --target rejects cleanly (no crash).
+  - name: swarm-rejects-empty-targets
+    run: bin/fleetctl swarm --cmd "uptime" 2>&1 || true
+    expect:
+      exit: 0
+      stdout_contains: "--all"
+
+  # 3. Ledger remains signature-valid before/after the swarm CLI surface
+  # was exercised. (No mutating swarm ran, so VerifyAll must still succeed.)
+  - name: ledger-verify-clean
+    run: bin/fleetctl ledger verify
+    expect:
+      exit: 0
