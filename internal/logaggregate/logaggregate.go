@@ -248,7 +248,7 @@ func (a *Aggregator) pullOne(ctx context.Context, target string) PullResult {
 	// "No such file" tar emits when the glob matches zero files. We
 	// then check tar's exit code: a clean run with zero matches still
 	// exits 0 because we explicitly route stderr to /dev/null.
-	pullCmd := fmt.Sprintf("sh -c 'tar -C $HOME/.hermes/logs -c -f - $(cd $HOME/.hermes/logs && ls *.jsonl 2>/dev/null) 2>/dev/null | gzip -c'")
+	pullCmd := "sh -c 'tar -C $HOME/.hermes/logs -c -f - $(cd $HOME/.hermes/logs && ls *.jsonl 2>/dev/null) 2>/dev/null | gzip -c'"
 	stdout, stderr, exit, err := a.SSHRunner(ctx, target, pullCmd)
 	if err != nil {
 		res.Err = fmt.Errorf("ssh pull: %w", err)

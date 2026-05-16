@@ -153,7 +153,7 @@ func (s *Store) withLock(pairingID string, f func() error) error {
 	if err := syscall.Flock(int(fh.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("budget: flock %s: %w", lockPath, err)
 	}
-	defer syscall.Flock(int(fh.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(fh.Fd()), syscall.LOCK_UN) }()
 	return f()
 }
 

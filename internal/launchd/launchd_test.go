@@ -670,9 +670,9 @@ func TestEmbeddedFSCarriesAllTemplates(t *testing.T) {
 // TestRepoRootTemplatesInSync asserts that the canonical templates the
 // task spec asks for at templates/launchd/*.tmpl (repo root) stay
 // byte-identical to the copies embedded into the launchd package via
-// go:embed. The package needs its own copy because go:embed can't reach
-// outside the package directory, but the repo-root templates are the
-// human-editable source of truth and CI must catch any drift.
+// `go:embed`. The package needs its own copy because `go:embed` can't
+// reach outside the package directory, but the repo-root templates are
+// the human-editable source of truth and CI must catch any drift.
 func TestRepoRootTemplatesInSync(t *testing.T) {
 	// Locate the repo root by walking up from this file's directory
 	// until we find templates/launchd. Avoids hard-coding an absolute

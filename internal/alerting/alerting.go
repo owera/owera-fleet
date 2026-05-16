@@ -292,7 +292,7 @@ func doRequest(client *http.Client, req *http.Request) error {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("http %d: %s", resp.StatusCode, string(body))
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 

@@ -130,13 +130,6 @@ func WithStdin(r io.Reader) Option {
 	return func(o *Options) { o.stdin = r }
 }
 
-// withExtraArgs is the internal escape hatch for callers in this package
-// that need to append flags (e.g. `--version`) without exposing the
-// surface to consumers — kept unexported on purpose.
-func withExtraArgs(args ...string) Option {
-	return func(o *Options) { o.extraArgs = append(o.extraArgs, args...) }
-}
-
 // Client wraps the local hermes binary plus the pin state read from disk.
 // Construct via [Default] for production; tests construct it directly
 // with fakes via [NewWithDeps].

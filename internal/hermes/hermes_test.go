@@ -53,10 +53,10 @@ func (f *fakeRunner) runCmd(ctx context.Context, cmd *exec.Cmd) error {
 	f.calls = append(f.calls, rc)
 
 	if i < len(f.nextStdout) && cmd.Stdout != nil {
-		_, _ = io.WriteString(cmd.Stdout.(io.Writer), f.nextStdout[i])
+		_, _ = io.WriteString(cmd.Stdout, f.nextStdout[i])
 	}
 	if i < len(f.nextStderr) && cmd.Stderr != nil {
-		_, _ = io.WriteString(cmd.Stderr.(io.Writer), f.nextStderr[i])
+		_, _ = io.WriteString(cmd.Stderr, f.nextStderr[i])
 	}
 	if i < len(f.returnErr) && f.returnErr[i] != nil {
 		return f.returnErr[i]
@@ -348,7 +348,7 @@ func TestRunWithSecretsNoLeak(t *testing.T) {
 	// Belt and braces: cmd.Env must be nil (inherited) so the OS-level
 	// parent environment is the only env the child sees. Anything else
 	// risks accidental leaks during refactors.
-	if call.env != nil && len(call.env) != 0 {
+	if len(call.env) != 0 {
 		t.Errorf("cmd.Env = %v, want nil/empty (inherited)", call.env)
 	}
 }
