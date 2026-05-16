@@ -1,0 +1,33 @@
+# Binaries
+/bin/
+/dist/
+*.test
+*.out
+fleetctl
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.gpg
+/.secrets/
+
+# Local runtime artifacts
+/tmp/
+/.runtime/
+
+# Coverage
+coverage.out
+coverage.html
