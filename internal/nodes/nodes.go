@@ -26,8 +26,8 @@ const DefaultPath = "~/.hermes/nodes.txt"
 
 // Node is one entry in the registry.
 type Node struct {
-	User string
-	Host string
+	User string `json:"user"`
+	Host string `json:"host"`
 }
 
 // String returns the canonical "user@host" form.

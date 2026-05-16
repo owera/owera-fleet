@@ -30,6 +30,9 @@ jobs:
       - name: coverage
         run: go tool cover -func=coverage.out | tail -1
 
+      - name: skill manifest drift gate
+        run: go run ./cmd/fleetctl gen-skills --check
+
   golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest

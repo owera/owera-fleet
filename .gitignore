@@ -3,7 +3,8 @@
 /dist/
 *.test
 *.out
-fleetctl
+# Compiled fleetctl at the repo root only — must not match cmd/fleetctl/ source.
+/fleetctl
 
 # Go
 /vendor/
