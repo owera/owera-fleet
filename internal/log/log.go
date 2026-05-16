@@ -58,8 +58,10 @@ type Event struct {
 }
 
 // MaxStderrTailBytes caps the stderr capture written into an Event so a
-// chatty failing process can't blow out the log line.
-const MaxStderrTailBytes = 2048
+// chatty failing process can't blow out the log line. Sized to match the
+// 4 KiB tail hermes-setup's lib/ssh.sh used (`tail -c 4000`) so downstream
+// audit tooling that grew up around the bash schema keeps working.
+const MaxStderrTailBytes = 4096
 
 // Logger writes JSONL events to an underlying io.Writer.
 //

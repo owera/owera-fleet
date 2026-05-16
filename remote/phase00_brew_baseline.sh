@@ -106,10 +106,10 @@ fi
 #
 # Mirrors internal/log.Event. Written to stderr so stdout stays
 # human-readable. RFC 3339 UTC timestamp; stderr_tail truncated to the
-# last 2048 bytes (matches MaxStderrTailBytes in internal/log).
+# last 4096 bytes (matches MaxStderrTailBytes in internal/log).
 # ---------------------------------------------------------------------------
 
-MAX_STDERR_TAIL=2048
+MAX_STDERR_TAIL=4096
 
 _iso_now() {
   # `date -u +%FT%TZ` works on macOS 3.2 bash + GNU coreutils; second

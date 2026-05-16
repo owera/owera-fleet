@@ -259,6 +259,10 @@ func resolveDelegateTargets(reg *nodes.Registry) ([]osh.Target, error) {
 // remote).
 func dispatchOne(ctx context.Context, stdout io.Writer, stderr io.Writer, dialer Dialer, logger *log.Logger, target osh.Target) int {
 	action := truncateAction(delegateCmd)
+	// nodeLabel is the bare user@host form (no port) so the JSONL stream
+	// stays compatible with hermes-setup's existing delegate.jsonl shape
+	// and any downstream `jq` audit pipelines keyed on a port-less host.
+	nodeLabel := target.User + "@" + target.Host
 	start := time.Now()
 
 	dialCtx, cancel := context.WithTimeout(ctx, delegateTimeout)
@@ -268,7 +272,7 @@ func dispatchOne(ctx context.Context, stdout io.Writer, stderr io.Writer, dialer
 	if err != nil {
 		dur := time.Since(start).Milliseconds()
 		_ = logger.Action(log.Event{
-			Node:       target.String(),
+			Node:       nodeLabel,
 			Phase:      "delegate",
 			Action:     action,
 			Result:     log.ResultError,
@@ -303,7 +307,7 @@ func dispatchOne(ctx context.Context, stdout io.Writer, stderr io.Writer, dialer
 	}
 
 	_ = logger.Action(log.Event{
-		Node:       target.String(),
+		Node:       nodeLabel,
 		Phase:      "delegate",
 		Action:     action,
 		Result:     result,

@@ -229,8 +229,8 @@ func TestDelegateJSONLEmission(t *testing.T) {
 
 	t.Logf("emitted JSONL: %s", lines[0])
 
-	if ev.Node != "hermes@claw1.local:22" {
-		t.Errorf("Node = %q, want %q", ev.Node, "hermes@claw1.local:22")
+	if ev.Node != "hermes@claw1.local" {
+		t.Errorf("Node = %q, want %q", ev.Node, "hermes@claw1.local")
 	}
 	if ev.Phase != "delegate" {
 		t.Errorf("Phase = %q, want %q", ev.Phase, "delegate")
