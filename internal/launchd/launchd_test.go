@@ -648,15 +648,17 @@ func equalSlices(a, b []string) bool {
 	return true
 }
 
-// quick sanity that the embedded FS actually carries five files —
-// caught one bug during development where the embed pattern only
-// captured four because one file had a typo in its suffix.
+// quick sanity that the embedded FS actually carries every advertised
+// template — caught one bug during development where the embed pattern
+// only captured four because one file had a typo in its suffix. The
+// expected count tracks AllTemplates() so adding a new plist updates
+// one source of truth instead of two.
 func TestEmbeddedFSCarriesAllTemplates(t *testing.T) {
 	entries, err := fs.ReadDir(embeddedTemplates, templatesDir)
 	if err != nil {
 		t.Fatalf("read embedded dir: %v", err)
 	}
-	if got, want := len(entries), 5; got != want {
+	if got, want := len(entries), len(AllTemplates()); got != want {
 		names := []string{}
 		for _, e := range entries {
 			names = append(names, e.Name())

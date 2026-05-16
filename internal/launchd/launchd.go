@@ -77,6 +77,7 @@ const (
 	TemplateBackupWorker = "backup-worker"
 	TemplateWatchdog     = "watchdog"
 	TemplateLogrotate    = "logrotate"
+	TemplateLogAggregate = "logaggregate"
 )
 
 // AllTemplates returns the canonical list of bundled template names in
@@ -90,6 +91,7 @@ func AllTemplates() []string {
 		TemplateBackupWorker,
 		TemplateWatchdog,
 		TemplateLogrotate,
+		TemplateLogAggregate,
 	}
 }
 
