@@ -189,8 +189,8 @@ func (r PhaseResult) Summary() string {
 		r.Phase, status, len(r.Events), r.Duration.Milliseconds())
 }
 
-// WriteTo writes a human-readable phase report to w.
-func (r PhaseResult) WriteTo(w io.Writer) {
+// WriteReport writes a human-readable phase report to w.
+func (r PhaseResult) WriteReport(w io.Writer) {
 	fmt.Fprintf(w, "=== %s ===\n", r.Phase)
 	fmt.Fprintf(w, "Exit: %d  Duration: %s\n", r.ExitCode, r.Duration.Round(time.Millisecond))
 	for _, ev := range r.Events {

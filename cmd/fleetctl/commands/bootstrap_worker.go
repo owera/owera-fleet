@@ -142,7 +142,7 @@ func runBootstrapWorker(cmd *cobra.Command, _ []string) error {
 		cancel()
 
 		if !bwQuiet {
-			res.WriteTo(cmd.OutOrStdout())
+			res.WriteReport(cmd.OutOrStdout())
 		}
 
 		// Write one JSONL event per phase.
