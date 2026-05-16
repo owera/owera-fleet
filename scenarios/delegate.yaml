@@ -1,0 +1,11 @@
+name: delegate
+tier: 2
+description: fleetctl delegate dispatches a command to a worker and emits JSONL.
+vars:
+  NODE: hermes@claw1.local
+
+steps:
+  - name: delegate-echo
+    run: bin/fleetctl delegate --node ${NODE} --cmd "echo hello-from-delegate" --quiet
+    expect:
+      exit: 0

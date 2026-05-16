@@ -1,0 +1,15 @@
+name: health
+tier: 1
+description: fleetctl health produces a fleet health report for the gateway.
+
+steps:
+  - name: health-gateway
+    run: bin/fleetctl health --quiet
+    expect:
+      exit: 0
+
+  - name: health-json
+    run: bin/fleetctl health --json
+    expect:
+      exit: 0
+      stdout_contains: '"node"'

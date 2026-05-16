@@ -1,0 +1,15 @@
+name: smoke
+tier: 1
+description: Basic fleetctl CLI sanity — binary present, version prints, help works.
+
+steps:
+  - name: version
+    run: bin/fleetctl version
+    expect:
+      exit: 0
+
+  - name: help
+    run: bin/fleetctl --help
+    expect:
+      exit: 0
+      stdout_contains: "fleetctl"

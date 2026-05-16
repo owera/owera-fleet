@@ -1,0 +1,16 @@
+name: state
+tier: 1
+description: fleetctl state outputs a markdown report without errors.
+
+steps:
+  - name: state-markdown
+    run: bin/fleetctl state
+    expect:
+      exit: 0
+      stdout_contains: "# Fleet State"
+
+  - name: state-json
+    run: bin/fleetctl state --json
+    expect:
+      exit: 0
+      stdout_contains: '"hostname"'
