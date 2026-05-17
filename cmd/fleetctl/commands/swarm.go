@@ -24,6 +24,7 @@ import (
 
 var (
 	swarmTaskID    string
+	swarmTenantID  string
 	swarmParentRun string
 	swarmCmdStr    string
 	swarmTargets   []string
@@ -54,6 +55,7 @@ nodes.txt.`,
 
 func init() {
 	swarmCmd.Flags().StringVar(&swarmTaskID, "task-id", "", "parent task ID (generated if empty)")
+	swarmCmd.Flags().StringVar(&swarmTenantID, "tenant-id", "", "customer-plane tenant stamped onto every ledger entry (empty = operator-only)")
 	swarmCmd.Flags().StringVar(&swarmParentRun, "parent-run", "swarm", "free-form description of the swarm run")
 	swarmCmd.Flags().StringVar(&swarmCmdStr, "cmd", "", "command each leaf runs on its node (required)")
 	swarmCmd.Flags().StringSliceVar(&swarmTargets, "target", nil, "specific node to include (repeatable)")
@@ -125,6 +127,7 @@ func runSwarm(cmd *cobra.Command, _ []string) error {
 
 	plan := orchestrator.Plan{
 		TaskID:      taskID,
+		TenantID:    swarmTenantID,
 		ParentRun:   swarmParentRun,
 		MaxParallel: swarmParallel,
 		RetryEach:   swarmRetry,
@@ -261,6 +264,7 @@ func swarmSkill() Skill {
 			{Name: "--parallel N", Description: "Max concurrent leaves (0 = unbounded)."},
 			{Name: "--retry N", Description: "Per-leaf retries on transient failure."},
 			{Name: "--task-id ID", Description: "Override parent task ID."},
+			{Name: "--tenant-id ID", Description: "Customer-plane tenant stamped onto every ledger entry (empty = operator-only)."},
 			{Name: "--timeout DUR", Description: "Per-leaf timeout (default 5m)."},
 			{Name: "--json", Description: "Emit JSON report."},
 			{Name: "--dry-run", Description: "Resolve the leaf plan and print it without dialing SSH."},

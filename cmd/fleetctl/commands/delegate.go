@@ -51,14 +51,15 @@ var delegateNodesPath = ""
 const delegateActionMax = 80
 
 var (
-	delegateNode    string
-	delegateAll     bool
-	delegateRandom  bool
-	delegateCmd     string
-	delegateTimeout time.Duration
-	delegateJSON    bool
-	delegateQuiet   bool
-	delegateAnyNode bool
+	delegateNode     string
+	delegateAll      bool
+	delegateRandom   bool
+	delegateCmd      string
+	delegateTimeout  time.Duration
+	delegateJSON     bool
+	delegateQuiet    bool
+	delegateAnyNode  bool
+	delegateTenantID string
 )
 
 var delegateCobraCmd = &cobra.Command{
@@ -88,6 +89,12 @@ func init() {
 	delegateCobraCmd.Flags().BoolVar(&delegateJSON, "json", false, "emit one JSON object per target to stdout")
 	delegateCobraCmd.Flags().BoolVar(&delegateQuiet, "quiet", false, "suppress stdout; JSONL log still written")
 	delegateCobraCmd.Flags().BoolVar(&delegateAnyNode, "any-node", false, "allow --node for a target not in nodes.txt")
+	// --tenant-id is accepted (and recorded into the action prefix) so
+	// operators can exercise the issue-#5 customer-plane tenant pipeline
+	// against delegate's ad-hoc command path. Delegate itself does not
+	// write ledger entries; the flag is informational here and is the
+	// primary tenant-flow integration point on `fleetctl swarm`.
+	delegateCobraCmd.Flags().StringVar(&delegateTenantID, "tenant-id", "", "tenant ID stamped into the audit action (informational on delegate)")
 	rootCmd.AddCommand(delegateCobraCmd)
 }
 
@@ -259,6 +266,17 @@ func resolveDelegateTargets(reg *nodes.Registry) ([]osh.Target, error) {
 // remote).
 func dispatchOne(ctx context.Context, stdout io.Writer, stderr io.Writer, dialer Dialer, logger *log.Logger, target osh.Target) int {
 	action := truncateAction(delegateCmd)
+	if delegateTenantID != "" {
+		// Prefix the action so downstream audit tooling can filter by
+		// `tenant=<id>` without a separate JSONL field. internal/log.Event
+		// does not (yet) carry a tenant column; this keeps the
+		// customer-plane audit signal visible without expanding the
+		// log schema in a separate package.
+		action = "tenant=" + delegateTenantID + " " + action
+		if len(action) > delegateActionMax {
+			action = action[:delegateActionMax]
+		}
+	}
 	// nodeLabel is the bare user@host form (no port) so the JSONL stream
 	// stays compatible with hermes-setup's existing delegate.jsonl shape
 	// and any downstream `jq` audit pipelines keyed on a port-less host.
@@ -405,6 +423,7 @@ func delegateSkill() Skill {
 			{Name: "--json", Description: "Emit one JSON object per target to stdout."},
 			{Name: "--quiet", Description: "Suppress stdout; JSONL log is still written."},
 			{Name: "--any-node", Description: "Allow --node for a target not in nodes.txt."},
+			{Name: "--tenant-id ID", Description: "Tenant ID stamped into the audit action prefix (informational on delegate)."},
 		},
 		Examples: []SkillExample{
 			{Description: "Run a probe on one worker", Command: `fleetctl delegate --node hermes@claw1.local --cmd "uname -a"`},
