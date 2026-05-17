@@ -6,9 +6,9 @@ This repo replaces the earlier `hermes-setup` bash prototype with a single-binar
 
 ## Status
 
-🚧 **Early Phase 1 build.** Foundation libraries are landing first (`internal/log`, `internal/nodes`, `internal/json`, `internal/report`); commands and bootstrap follow.
+🟢 **Phase 1 + Phase 2 primitives mostly shipped; Phase 2.5 customer-plane seam is live in production.** All twelve Phase 2 primitive packages are in `internal/` with matching `fleetctl` subcommands. The JSON-RPC server (`fleetctl serve`) runs under launchd on `claw3.local` and answers `fleet.SubmitJob`, `fleet.CancelTask`, `fleet.HealthSnapshot`, `fleet.LedgerTail` calls from the cloud plane over a Cloudflare Named Tunnel.
 
-For the full multi-phase plan, see [`docs/plan.md`](docs/plan.md). For the v2-era prototype this repo supersedes, see [`docs/archive/hermes-setup/`](docs/archive/hermes-setup/).
+Outstanding before Phase 4 launch readiness: end-to-end scenario coverage per V0 SKU on the live fleet; cutover from the bash prototype's `STATE.md` to `fleetctl state --markdown`; staging Mac provisioned; on-call drill. See [`docs/roadmap.md`](docs/roadmap.md) for the full board and [`knowing-all-you-now-calm-leaf.md`](knowing-all-you-now-calm-leaf.md) for the master plan. Sister repo: [`owera-cloud`](https://github.com/owera/owera-cloud) (customer plane).
 
 ## Quickstart (planned)
 
