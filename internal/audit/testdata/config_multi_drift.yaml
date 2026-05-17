@@ -1,0 +1,10 @@
+# Multi-drift fixture: mirrors the live ~/.hermes/config.yaml shape on
+# 2026-05-17 — all four SECURITY_NOTES.md drift rows fire.
+security:
+  website_blocklist:
+    enabled: false
+checkpoints:
+  enabled: false
+sessions:
+  retention_days: 90
+# No `gateway:` section at all — matches the live deployment.
