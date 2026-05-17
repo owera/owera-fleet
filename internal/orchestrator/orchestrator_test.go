@@ -93,6 +93,117 @@ func TestRetryEach(t *testing.T) {
 	}
 }
 
+// TestPlanTenantIDPropagation guards the issue-#5 contract: Plan.TenantID
+// stamps onto every ledger entry the orchestrator writes — both the parent
+// swarm markers AND the merged per-leaf entries — so the customer plane can
+// reconcile every signed row back to the tenant that owes the money.
+func TestPlanTenantIDPropagation(t *testing.T) {
+	l, err := ledger.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	o := &orchestrator.Orchestrator{
+		Ledger: l,
+		Run: func(_ context.Context, in orchestrator.LeafInput) ([]ledger.Entry, error) {
+			// Leaf returns its own per-leaf entry with TenantID UNSET; the
+			// orchestrator must backfill it from the plan.
+			return []ledger.Entry{{
+				Phase:  "leaf",
+				Action: "work:" + in.LeafID,
+				Result: ledger.ResultOK,
+			}}, nil
+		},
+	}
+	plan := orchestrator.Plan{
+		TaskID:    "tenant-task",
+		TenantID:  "tenant-acme",
+		ParentRun: "billing-run",
+		Leaves: []orchestrator.LeafInput{
+			{Node: "n1", LeafID: "l1"},
+			{Node: "n2", LeafID: "l2"},
+		},
+	}
+	if _, err := o.Execute(context.Background(), plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	entries, err := l.Read("tenant-task")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no entries written")
+	}
+	// EVERY entry — parent markers + leaf entries — must carry the tenant.
+	for i, e := range entries {
+		if e.TenantID != "tenant-acme" {
+			t.Errorf("entry[%d] (%s/%s): TenantID = %q, want tenant-acme",
+				i, e.Phase, e.Action, e.TenantID)
+		}
+	}
+
+	// And the cross-task tenant query surfaces them all.
+	hits, err := l.ReadByTenant("tenant-acme")
+	if err != nil {
+		t.Fatalf("ReadByTenant: %v", err)
+	}
+	if len(hits) != len(entries) {
+		t.Errorf("ReadByTenant returned %d, want %d", len(hits), len(entries))
+	}
+}
+
+// TestPlanTenantIDDoesNotOverrideExplicitLeafValue documents the precedence
+// rule: a leaf runner that explicitly sets a different TenantID on its
+// returned entry is trusted (the orchestrator does NOT clobber it). This
+// matters for future cases where a leaf might attribute work to a sub-tenant.
+func TestPlanTenantIDDoesNotOverrideExplicitLeafValue(t *testing.T) {
+	l, err := ledger.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	o := &orchestrator.Orchestrator{
+		Ledger: l,
+		Run: func(_ context.Context, in orchestrator.LeafInput) ([]ledger.Entry, error) {
+			return []ledger.Entry{{
+				TenantID: "tenant-sub",
+				Phase:    "leaf",
+				Action:   "work:" + in.LeafID,
+				Result:   ledger.ResultOK,
+			}}, nil
+		},
+	}
+	plan := orchestrator.Plan{
+		TaskID:   "parent-task",
+		TenantID: "tenant-parent",
+		Leaves:   []orchestrator.LeafInput{{Node: "n1", LeafID: "l1"}},
+	}
+	if _, err := o.Execute(context.Background(), plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	entries, err := l.Read("parent-task")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	var leafEntries, parentEntries int
+	for _, e := range entries {
+		if e.Phase == "leaf" {
+			leafEntries++
+			if e.TenantID != "tenant-sub" {
+				t.Errorf("leaf entry tenant clobbered: %q (want tenant-sub)", e.TenantID)
+			}
+		} else {
+			parentEntries++
+			if e.TenantID != "tenant-parent" {
+				t.Errorf("parent entry tenant = %q (want tenant-parent)", e.TenantID)
+			}
+		}
+	}
+	if leafEntries == 0 || parentEntries == 0 {
+		t.Errorf("got %d leaf / %d parent entries; expected both >0", leafEntries, parentEntries)
+	}
+}
+
 func TestMaxParallel(t *testing.T) {
 	var concurrent, peak int32
 	o := &orchestrator.Orchestrator{

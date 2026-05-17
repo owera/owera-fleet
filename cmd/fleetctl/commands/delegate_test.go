@@ -67,6 +67,7 @@ func resetDelegateFlags() {
 	delegateJSON = false
 	delegateQuiet = false
 	delegateAnyNode = false
+	delegateTenantID = ""
 }
 
 func TestValidateDelegateFlags(t *testing.T) {

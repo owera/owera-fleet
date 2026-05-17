@@ -25,6 +25,7 @@ Run an ad-hoc shell command on one, all, or a random worker, and append a JSONL 
 | `--json` | Emit one JSON object per target to stdout. |
 | `--quiet` | Suppress stdout; JSONL log is still written. |
 | `--any-node` | Allow --node for a target not in nodes.txt. |
+| `--tenant-id ID` | Tenant ID stamped into the audit action prefix (informational on delegate). |
 
 ## Examples
 

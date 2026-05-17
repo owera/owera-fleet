@@ -42,9 +42,16 @@ const (
 // entry with the Sig field set to "" (omitempty drops it from the signed
 // payload). The zero value of Entry is not valid; callers must set TaskID and
 // Phase at minimum.
+//
+// TenantID is the customer-plane tenant on whose behalf the work was
+// performed. It is `omitempty` so operator-only jobs (no tenant) continue to
+// produce the same signed bytes as before this field was introduced —
+// pre-existing ledger files therefore still verify cleanly after upgrade.
+// When set, the value is covered by the signature like every other field.
 type Entry struct {
 	Ts         time.Time       `json:"ts"`
 	TaskID     string          `json:"task_id"`
+	TenantID   string          `json:"tenant_id,omitempty"`
 	Phase      string          `json:"phase"`
 	Action     string          `json:"action"`
 	Result     string          `json:"result"`
@@ -215,6 +222,35 @@ func (l *Ledger) Read(taskID string) ([]Entry, error) {
 		entries = append(entries, e)
 	}
 	return entries, sc.Err()
+}
+
+// ReadByTenant scans every task file under the ledger directory and returns
+// the union of entries whose TenantID matches the supplied id. Entries with
+// bad signatures cause the scan to abort with [ErrBadSignature] so callers
+// cannot silently miss billing data behind a corrupt file. Pass an empty
+// tenantID to select operator-only entries (TenantID == "").
+//
+// Cost is O(total entries across all tasks) — fine at fleet scale where the
+// ledger turnover is small and per-tenant queries run once per billing
+// reconciliation, not per request.
+func (l *Ledger) ReadByTenant(tenantID string) ([]Entry, error) {
+	ids, err := l.Tasks()
+	if err != nil {
+		return nil, err
+	}
+	var out []Entry
+	for _, id := range ids {
+		entries, err := l.Read(id)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.TenantID == tenantID {
+				out = append(out, e)
+			}
+		}
+	}
+	return out, nil
 }
 
 // Tasks returns the task IDs that have ledger files, sorted alphabetically.
