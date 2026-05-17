@@ -54,12 +54,20 @@ type Plan struct {
 }
 
 // SwarmResult aggregates the per-leaf outcomes.
+//
+// LedgerErrs is the list of errors encountered while appending entries to
+// the parent ledger. Ledger-append failures do not flip OK to false — the
+// per-leaf work may have completed successfully even when the audit-trail
+// write later failed (disk full, fsync error). Callers that treat the
+// audit record as load-bearing should check len(LedgerErrs) and
+// re-record or alert separately.
 type SwarmResult struct {
-	TaskID    string
-	Leaves    []LeafResult
-	OK        bool
-	StartedAt time.Time
-	EndedAt   time.Time
+	TaskID     string
+	Leaves     []LeafResult
+	OK         bool
+	StartedAt  time.Time
+	EndedAt    time.Time
+	LedgerErrs []error
 }
 
 // Orchestrator drives a swarm and merges per-leaf ledger entries into the
@@ -136,30 +144,38 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 		}
 	}
 
-	// Merge per-leaf entries into the parent ledger.
+	// Merge per-leaf entries into the parent ledger. Append failures are
+	// collected into result.LedgerErrs rather than ignored — disk-full
+	// or fsync errors would otherwise leave the swarm reporting OK with
+	// a silently-truncated audit trail.
 	if o.Ledger != nil {
-		// Parent "swarm_start" marker.
-		_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+		writeEntry := func(e ledger.Entry) {
+			if err := o.Ledger.Append(plan.TaskID, e); err != nil {
+				result.LedgerErrs = append(result.LedgerErrs,
+					fmt.Errorf("ledger append phase=%s action=%s: %w", e.Phase, e.Action, err))
+			}
+		}
+		writeEntry(ledger.Entry{
 			Phase:  "swarm",
 			Action: "start:" + plan.ParentRun,
 			Result: ledger.ResultOK,
 		})
 		for _, lr := range results {
 			for _, e := range lr.Entries {
-				// Re-emit each leaf entry under the parent task ID, with the
-				// leaf's existing phase preserved.
+				// Re-emit each leaf entry under the parent task ID,
+				// preserving the leaf's existing phase.
 				e.TaskID = plan.TaskID
-				_ = o.Ledger.Append(plan.TaskID, e)
+				writeEntry(e)
 			}
 			if lr.Err != nil {
-				_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+				writeEntry(ledger.Entry{
 					Phase:      "swarm",
 					Action:     "leaf-error:" + lr.LeafID,
 					Result:     ledger.ResultError,
 					DurationMs: lr.Duration.Milliseconds(),
 				})
 			} else {
-				_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+				writeEntry(ledger.Entry{
 					Phase:      "swarm",
 					Action:     "leaf-ok:" + lr.LeafID,
 					Result:     ledger.ResultOK,
@@ -171,7 +187,7 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 		if !result.OK {
 			final = ledger.ResultError
 		}
-		_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+		writeEntry(ledger.Entry{
 			Phase:  "swarm",
 			Action: "done:" + plan.ParentRun,
 			Result: final,
