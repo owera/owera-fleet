@@ -12,9 +12,9 @@ import (
 
 // TestCampaignSwarmDispatchStub mirrors TestTriageWatchDispatchStub
 // (in triage_watch_test.go) but for campaign-swarm@v1. The key
-// differences are Meter = "campaigns_launched" and Units = 1 — campaign-
-// swarm is per-job fixed, so the "one campaign launched" counter is
-// always 1.
+// differences are Meter = "S" (tier letter — catalog Dispatcher
+// builds StripeRef "campaign-swarm:S" from this) and Units = 1.
+// WS-A defaults to tier S; WS-C will pick by inputs.
 func TestCampaignSwarmDispatchStub(t *testing.T) {
 	tmp := t.TempDir()
 	led, err := ledger.Open(filepath.Join(tmp, "ledger"))
@@ -54,8 +54,8 @@ func TestCampaignSwarmDispatchStub(t *testing.T) {
 	if got.Event.SKU != "campaign-swarm@v1" {
 		t.Errorf("BillEvent.SKU: got %q, want %q", got.Event.SKU, "campaign-swarm@v1")
 	}
-	if got.Event.Meter != "campaigns_launched" {
-		t.Errorf("BillEvent.Meter: got %q, want %q", got.Event.Meter, "campaigns_launched")
+	if got.Event.Meter != "S" {
+		t.Errorf("BillEvent.Meter: got %q, want %q", got.Event.Meter, "S")
 	}
 	if got.Event.Units != 1 {
 		t.Errorf("BillEvent.Units: got %d, want 1", got.Event.Units)
@@ -140,7 +140,7 @@ func TestCampaignSwarmDispatchWritesBillEntry(t *testing.T) {
 	if err := json.Unmarshal(bill.Data, &ev); err != nil {
 		t.Fatalf("decode bill data: %v", err)
 	}
-	if ev.SKU != "campaign-swarm@v1" || ev.Meter != "campaigns_launched" || ev.Units != 1 {
+	if ev.SKU != "campaign-swarm@v1" || ev.Meter != "S" || ev.Units != 1 {
 		t.Errorf("bill data round-trip mismatch: %+v", ev)
 	}
 }
