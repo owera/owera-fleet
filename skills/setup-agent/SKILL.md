@@ -17,7 +17,7 @@ Install, uninstall, or report status of a com.hermes.* LaunchAgent on the gatewa
 
 | Flag | Meaning |
 |---|---|
-| `<service>` | Service: heartbeat, backup, backup-worker, watchdog, or logrotate. |
+| `<service>` | Service: heartbeat, backup, backup-worker, watchdog, logrotate, or logaggregate. |
 | `--install` | Install and load the LaunchAgent plist. |
 | `--uninstall` | Unload and remove the LaunchAgent plist. |
 | `--repo-dir PATH` | hermes-setup repo root (required for --install of script-based agents). |
@@ -27,6 +27,7 @@ Install, uninstall, or report status of a com.hermes.* LaunchAgent on the gatewa
 | `--restic-password-command CMD` | Restic password command (backup --install). |
 | `--user NAME` | Worker username for heartbeat plist (default: hermes). |
 | `--node-label LABEL` | Heartbeat node label (default: hostname). |
+| `--fleetctl-path PATH` | Path to fleetctl binary (logaggregate --install; defaults to the running binary). |
 | `--json` | Emit JSON result to stdout. |
 | `--quiet` | Suppress stdout; JSONL log still written. |
 

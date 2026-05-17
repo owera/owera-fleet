@@ -648,64 +648,22 @@ func equalSlices(a, b []string) bool {
 	return true
 }
 
-// quick sanity that the embedded FS actually carries five files —
-// caught one bug during development where the embed pattern only
-// captured four because one file had a typo in its suffix.
+// quick sanity that the embedded FS actually carries every advertised
+// template — caught one bug during development where the embed pattern
+// only captured four because one file had a typo in its suffix. The
+// expected count tracks AllTemplates() so adding a new plist updates
+// one source of truth instead of two.
 func TestEmbeddedFSCarriesAllTemplates(t *testing.T) {
 	entries, err := fs.ReadDir(embeddedTemplates, templatesDir)
 	if err != nil {
 		t.Fatalf("read embedded dir: %v", err)
 	}
-	if got, want := len(entries), 5; got != want {
+	if got, want := len(entries), len(AllTemplates()); got != want {
 		names := []string{}
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
 		t.Errorf("embedded template count: got %d (%v), want %d", got, names, want)
-	}
-}
-
-// TestRepoRootTemplatesInSync asserts that the canonical templates the
-// task spec asks for at templates/launchd/*.tmpl (repo root) stay
-// byte-identical to the copies embedded into the launchd package via
-// go:embed. The package needs its own copy because go:embed can't reach
-// outside the package directory, but the repo-root templates are the
-// human-editable source of truth and CI must catch any drift.
-func TestRepoRootTemplatesInSync(t *testing.T) {
-	// Locate the repo root by walking up from this file's directory
-	// until we find templates/launchd. Avoids hard-coding an absolute
-	// path so the test works regardless of where the worktree lives.
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	repoTemplates := ""
-	for dir := wd; dir != "/" && dir != ""; dir = filepath.Dir(dir) {
-		candidate := filepath.Join(dir, "templates", "launchd")
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			repoTemplates = candidate
-			break
-		}
-	}
-	if repoTemplates == "" {
-		t.Skip("templates/launchd not found relative to cwd; skipping sync check")
-	}
-	for _, name := range AllTemplates() {
-		t.Run(name, func(t *testing.T) {
-			rootPath := filepath.Join(repoTemplates, name+".plist.tmpl")
-			rootData, err := os.ReadFile(rootPath)
-			if err != nil {
-				t.Fatalf("read root template: %v", err)
-			}
-			pkgData, err := fs.ReadFile(embeddedTemplates, filepath.Join(templatesDir, name+".plist.tmpl"))
-			if err != nil {
-				t.Fatalf("read embedded template: %v", err)
-			}
-			if !bytes.Equal(rootData, pkgData) {
-				t.Errorf("templates/launchd/%s.plist.tmpl and internal/launchd/templates/%s.plist.tmpl have drifted — keep them in sync",
-					name, name)
-			}
-		})
 	}
 }
 

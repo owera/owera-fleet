@@ -1,0 +1,49 @@
+name: usecase31_native_app
+tier: 3
+description: |
+  v2 §3.1 Software Engineering "native app build" use case — primitive-level
+  end-to-end exercise that stitches pairing creation, budget setting, ledger
+  inspection, and pairing revocation. Does NOT invoke xcodebuild; the
+  real-app build path is exercised by fleet-usecase-demos Layer 3.
+vars:
+  PAIR_LABEL: usecase31-test
+  PAIR_ID_FILE: /tmp/owera-fleet-usecase31-pair-id
+
+steps:
+  # 1. Create a labeled pairing and capture its ID in a temp file.
+  - name: pair-create
+    run: |
+      bin/fleetctl pair create --label ${PAIR_LABEL} --json \
+        | sed -E 's/.*"id":"([^"]+)".*/\1/' > ${PAIR_ID_FILE}
+      test -s ${PAIR_ID_FILE}
+    expect:
+      exit: 0
+
+  # 2. Apply a deliberately tight per-day request budget.
+  - name: pair-budget-tight
+    run: bin/fleetctl pair budget "$(cat ${PAIR_ID_FILE})" --max-requests 5
+    expect:
+      exit: 0
+      stdout_contains: "5 req/day"
+
+  # 3. List the ledger — empty result is fine, the command must succeed.
+  - name: ledger-list-survives
+    run: bin/fleetctl ledger list
+    expect:
+      exit: 0
+
+  # 4. Show the pairing back and assert the label round-trips.
+  - name: pair-show-roundtrip
+    run: bin/fleetctl pair show "$(cat ${PAIR_ID_FILE})"
+    expect:
+      exit: 0
+      stdout_contains: usecase31-test
+
+  # 5. Teardown: revoke the pairing and drop the temp file.
+  - name: pair-revoke
+    run: |
+      bin/fleetctl pair revoke "$(cat ${PAIR_ID_FILE})"
+      rm -f ${PAIR_ID_FILE}
+    expect:
+      exit: 0
+      stdout_contains: revoked

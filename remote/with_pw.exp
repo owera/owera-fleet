@@ -1,0 +1,16 @@
+#!/usr/bin/env expect -f
+# with_pw.exp — wrap an arbitrary command and feed HERMES_BOOTSTRAP_PW into
+# any sudo/ssh password prompts. Password never appears in argv or on disk.
+set timeout 600
+if {![info exists env(HERMES_BOOTSTRAP_PW)]} { exit 2 }
+set pw $env(HERMES_BOOTSTRAP_PW)
+eval spawn -noecho $argv
+expect {
+  -re {yes/no.*\?}        { send -- "yes\r"; exp_continue }
+  -re {[Pp]assword for}    { send -- "$pw\r"; exp_continue }
+  -re {[Pp]assword:}       { send -- "$pw\r"; exp_continue }
+  -re {Sorry, try again}   { puts stderr "with_pw: bad password"; exit 5 }
+  eof
+}
+catch wait r
+exit [lindex $r 3]

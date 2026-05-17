@@ -30,6 +30,7 @@ var (
 	saResticPassCmd string
 	saUser          string
 	saNodeLabel     string
+	saFleetctlPath  string
 	saJSON          bool
 	saQuiet         bool
 )
@@ -59,13 +60,15 @@ var knownSvcs = map[string]svcSpec{
 	"backup-worker": {"com.hermes.backup-worker", launchd.TemplateBackupWorker, "backup-worker-state.sh"},
 	"watchdog":      {"com.hermes.watchdog", launchd.TemplateWatchdog, "heartbeat-watchdog.sh"},
 	"logrotate":     {"com.hermes.logrotate", launchd.TemplateLogrotate, "rotate-hermes-logs.sh"},
+	"logaggregate":  {"com.hermes.logaggregate", launchd.TemplateLogAggregate, ""},
 }
 
 var setupAgentCobraCmd = &cobra.Command{
 	Use:   "setup-agent <service>",
 	Short: "Install, uninstall, or report status of a com.hermes.* LaunchAgent",
 	Long: `setup-agent manages the macOS LaunchAgent lifecycle for one Hermes service.
-<service> must be one of: heartbeat, backup, backup-worker, watchdog, logrotate.
+<service> must be one of: heartbeat, backup, backup-worker, watchdog, logrotate,
+logaggregate.
 
 Default action is status (read-only). Supply --install or --uninstall to
 mutate. Every mutation is appended to ~/.hermes/logs/setup-agent.jsonl in the
@@ -87,6 +90,7 @@ func init() {
 	setupAgentCobraCmd.Flags().StringVar(&saResticPassCmd, "restic-password-command", "", "restic password command for backup --install")
 	setupAgentCobraCmd.Flags().StringVar(&saUser, "user", "hermes", "worker username for heartbeat plist")
 	setupAgentCobraCmd.Flags().StringVar(&saNodeLabel, "node-label", "", "heartbeat node label (default: hostname short form)")
+	setupAgentCobraCmd.Flags().StringVar(&saFleetctlPath, "fleetctl-path", "", "path to the fleetctl binary (logaggregate --install; defaults to the currently-running binary)")
 	setupAgentCobraCmd.Flags().BoolVar(&saJSON, "json", false, "emit JSON result to stdout")
 	setupAgentCobraCmd.Flags().BoolVar(&saQuiet, "quiet", false, "suppress stdout; JSONL log still written")
 	rootCmd.AddCommand(setupAgentCobraCmd)
@@ -267,9 +271,28 @@ func buildSAVars(homeDir, name string, spec svcSpec) (launchd.Vars, error) {
 		vars.ResticPasswordCommand = saResticPassCmd
 	case launchd.TemplateWatchdog:
 		vars.AlertURL = saAlertURL
+	case launchd.TemplateLogAggregate:
+		// log-aggregate is the first agent whose ProgramArguments points
+		// at the fleetctl binary itself (every other agent runs a shell
+		// script under scripts/). Resolve in priority order: explicit
+		// --fleetctl-path → os.Executable() of the running fleetctl →
+		// fall back to "fleetctl" on PATH. Bake the resolved path into
+		// the plist so launchd survives a $PATH reshuffle.
+		bin := saFleetctlPath
+		if bin == "" {
+			if exe, err := osExecutable(); err == nil && exe != "" {
+				bin = exe
+			} else {
+				bin = "fleetctl"
+			}
+		}
+		vars.ScriptPath = bin
 	}
 	return vars, nil
 }
+
+// osExecutable is overridable in tests; production wraps os.Executable.
+var osExecutable = os.Executable
 
 func sortedSvcNames() []string {
 	names := make([]string, 0, len(knownSvcs))
@@ -286,7 +309,7 @@ func setupAgentSkill() Skill {
 		Trigger: "/setup-agent",
 		Summary: "Install, uninstall, or report status of a com.hermes.* LaunchAgent on the gateway.",
 		Args: []SkillArg{
-			{Name: "<service>", Description: "Service: heartbeat, backup, backup-worker, watchdog, or logrotate."},
+			{Name: "<service>", Description: "Service: heartbeat, backup, backup-worker, watchdog, logrotate, or logaggregate."},
 			{Name: "--install", Description: "Install and load the LaunchAgent plist."},
 			{Name: "--uninstall", Description: "Unload and remove the LaunchAgent plist."},
 			{Name: "--repo-dir PATH", Description: "hermes-setup repo root (required for --install of script-based agents)."},
@@ -296,6 +319,7 @@ func setupAgentSkill() Skill {
 			{Name: "--restic-password-command CMD", Description: "Restic password command (backup --install)."},
 			{Name: "--user NAME", Description: "Worker username for heartbeat plist (default: hermes)."},
 			{Name: "--node-label LABEL", Description: "Heartbeat node label (default: hostname)."},
+			{Name: "--fleetctl-path PATH", Description: "Path to fleetctl binary (logaggregate --install; defaults to the running binary)."},
 			{Name: "--json", Description: "Emit JSON result to stdout."},
 			{Name: "--quiet", Description: "Suppress stdout; JSONL log still written."},
 		},

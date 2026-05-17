@@ -1,0 +1,50 @@
+name: usecase33_ticket_triage
+tier: 3
+description: |
+  v2 §3.3 ticket-triage primitive exercise. Two layers of coverage:
+  CLI smokes for `fleetctl cronjob` and `fleetctl alert` (help-text
+  wiring only — these commands depend on a `hermes cronjob` binary not
+  present on this build, or on backend env vars), and SUBSTANTIVE
+  contract tests for `fleetctl run-with-secrets` (env-leak prevention
+  on stdin path, opt-in injection on --use-env path). The run-with-secrets
+  steps are real end-to-end exercises and previously surfaced the
+  stdout-swallowing bug that was fixed during PR #1 shake-down.
+
+steps:
+  # 1. cronjob CLI surface is wired (help text enumerates subcommands).
+  - name: cronjob-help
+    run: bin/fleetctl cronjob --help
+    expect:
+      exit: 0
+      stdout_contains: install
+
+  - name: cronjob-help-mentions-list
+    run: bin/fleetctl cronjob --help
+    expect:
+      exit: 0
+      stdout_contains: list
+
+  # 2. Stdin secrets contract: --secret on its own MUST NOT leak into the
+  # subprocess's environment. With sh's `echo $FOO`, "bar" must not appear
+  # in stdout.
+  - name: secrets-stdin-no-env-leak
+    run: bin/fleetctl run-with-secrets --secret FOO=bar -- sh -c 'echo BEFORE=$FOO=END'
+    expect:
+      exit: 0
+      stdout_absent: "BEFORE=bar=END"
+
+  # 3. Opt-in --use-env path: the same shell SHOULD see FOO in its env.
+  # Note: this asserts the documented contract; if the env path fails to
+  # surface child stdout to the CLI's stdout, this step exposes that bug.
+  - name: secrets-use-env-injects
+    run: bin/fleetctl run-with-secrets --use-env --secret FOO=bar -- sh -c 'echo BEFORE=$FOO=END'
+    expect:
+      exit: 0
+      stdout_contains: "BEFORE=bar=END"
+
+  # 4. Alert command surface is wired even without backend env vars set.
+  - name: alert-help
+    run: bin/fleetctl alert --help
+    expect:
+      exit: 0
+      stdout_contains: "--severity"
