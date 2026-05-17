@@ -26,6 +26,7 @@ Run an orchestrator + N leaf-subagent swarm with per-leaf ledger merge.
 | `--tenant-id ID` | Customer-plane tenant stamped onto every ledger entry (empty = operator-only). |
 | `--timeout DUR` | Per-leaf timeout (default 5m). |
 | `--json` | Emit JSON report. |
+| `--dry-run` | Resolve the leaf plan and print it without dialing SSH. |
 
 ## Examples
 
@@ -39,5 +40,11 @@ fleetctl swarm --cmd "hermes z 'post launch tweet'" --all
 
 ```
 fleetctl swarm --cmd uptime --target claw1.local --target claw2.local --parallel 2
+```
+
+**Preview the plan:**
+
+```
+fleetctl swarm --cmd uptime --all --dry-run
 ```
 

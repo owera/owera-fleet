@@ -23,6 +23,7 @@ Manage Hermes-managed cron jobs (long-running pollers run inside the Hermes runt
 | `status <name>` | Show a job's state + last run. |
 | `--env KEY=VALUE` | Per-job env var (repeatable). |
 | `--tag T` | Per-job tag (repeatable). |
+| `--dry-run` | Print the resolved Job spec (install only) without calling hermes cronjob. |
 
 ## Examples
 
@@ -30,6 +31,12 @@ Manage Hermes-managed cron jobs (long-running pollers run inside the Hermes runt
 
 ```
 fleetctl cronjob install --name triage --schedule '*/5 * * * *' --command 'hermes z "triage ticket queue"'
+```
+
+**Preview the install plan:**
+
+```
+fleetctl cronjob install --name triage --schedule '*/5 * * * *' --command 'echo hi' --dry-run
 ```
 
 **List jobs as JSON:**

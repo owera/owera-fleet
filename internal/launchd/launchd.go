@@ -40,6 +40,21 @@
 // (DOCTYPE on its own line), and the same trailing newline as the
 // hermes-setup sources. The acceptance test in launchd_test.go enforces
 // this.
+//
+// # Cross-arch PATH handling
+//
+// Every template hardcodes
+//
+//	PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+//
+// in the launchd environment. Both Apple Silicon (`/opt/homebrew/bin`)
+// and Intel (`/usr/local/bin`) brew prefixes are included so the same
+// rendered plist works on either architecture — bash silently skips
+// non-existent directories in PATH, so the unused-prefix entry costs
+// nothing at runtime. Templating this via `brew --prefix` at install
+// time would actually be worse because it bakes the install-time
+// architecture into the plist, breaking when the host's brew prefix
+// changes (e.g. Rosetta crossover, migration to a new Mac).
 package launchd
 
 import (

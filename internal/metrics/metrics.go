@@ -228,33 +228,39 @@ func (c *Collector) collectActionCounters() (counters []Metric, errRates []Metri
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
 		}
-		f, err := os.Open(filepath.Join(c.LogDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			var ev struct {
-				Ts     time.Time `json:"ts"`
-				Phase  string    `json:"phase"`
-				Result string    `json:"result"`
+		// Wrap the per-file scan in a closure so defer f.Close() runs
+		// even if the scanner panics or an early-return branch is added
+		// in the future. Without defer, the previous bottom-of-loop
+		// Close() leaked fds on any panic.
+		func() {
+			f, err := os.Open(filepath.Join(c.LogDir, e.Name()))
+			if err != nil {
+				return
 			}
-			if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-				continue
-			}
-			if totals[ev.Phase] == nil {
-				totals[ev.Phase] = map[string]int{}
-			}
-			totals[ev.Phase][ev.Result]++
+			defer f.Close()
+			sc := bufio.NewScanner(f)
+			for sc.Scan() {
+				var ev struct {
+					Ts     time.Time `json:"ts"`
+					Phase  string    `json:"phase"`
+					Result string    `json:"result"`
+				}
+				if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+					continue
+				}
+				if totals[ev.Phase] == nil {
+					totals[ev.Phase] = map[string]int{}
+				}
+				totals[ev.Phase][ev.Result]++
 
-			if ev.Ts.After(hourAgo) {
-				recentTotal[ev.Phase]++
-				if ev.Result == "error" {
-					recentErrors[ev.Phase]++
+				if ev.Ts.After(hourAgo) {
+					recentTotal[ev.Phase]++
+					if ev.Result == "error" {
+						recentErrors[ev.Phase]++
+					}
 				}
 			}
-		}
-		f.Close()
+		}()
 	}
 
 	for phase, byResult := range totals {
@@ -295,25 +301,27 @@ func (c *Collector) collectLatencyQuantiles() []Metric {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
 		}
-		f, err := os.Open(filepath.Join(c.LogDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			var ev struct {
-				Phase      string  `json:"phase"`
-				DurationMs float64 `json:"duration_ms"`
+		func() {
+			f, err := os.Open(filepath.Join(c.LogDir, e.Name()))
+			if err != nil {
+				return
 			}
-			if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-				continue
+			defer f.Close()
+			sc := bufio.NewScanner(f)
+			for sc.Scan() {
+				var ev struct {
+					Phase      string  `json:"phase"`
+					DurationMs float64 `json:"duration_ms"`
+				}
+				if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+					continue
+				}
+				if ev.DurationMs <= 0 {
+					continue
+				}
+				byPhase[ev.Phase] = append(byPhase[ev.Phase], ev.DurationMs)
 			}
-			if ev.DurationMs <= 0 {
-				continue
-			}
-			byPhase[ev.Phase] = append(byPhase[ev.Phase], ev.DurationMs)
-		}
-		f.Close()
+		}()
 	}
 	var out []Metric
 	for phase, durations := range byPhase {

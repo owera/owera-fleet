@@ -235,3 +235,51 @@ func TestMaxParallel(t *testing.T) {
 		t.Errorf("peak concurrency = %d, want ≤2", peak)
 	}
 }
+
+// TestExecuteSurfacesLedgerAppendErrors — when the parent ledger rejects
+// Append (here: opened read-only, so every Append returns an error),
+// SwarmResult.LedgerErrs must collect those errors instead of silently
+// discarding them. Pre-fix, every `_ = o.Ledger.Append(...)` swallowed
+// the error and the swarm reported OK with a silently-truncated audit
+// trail.
+func TestExecuteSurfacesLedgerAppendErrors(t *testing.T) {
+	dir := t.TempDir()
+	// Bootstrap the signing keys, then re-open read-only — Append on a
+	// read-only ledger returns "ledger: opened read-only" for every call.
+	if _, err := ledger.Open(dir); err != nil {
+		t.Fatalf("bootstrap ledger: %v", err)
+	}
+	readonly, err := ledger.OpenReadOnly(dir)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+
+	o := &orchestrator.Orchestrator{
+		Ledger: readonly,
+		Run: func(_ context.Context, in orchestrator.LeafInput) ([]ledger.Entry, error) {
+			return []ledger.Entry{{Phase: "leaf", Action: "work:" + in.LeafID, Result: ledger.ResultOK}}, nil
+		},
+	}
+	plan := orchestrator.Plan{
+		TaskID: "audit-loss",
+		Leaves: []orchestrator.LeafInput{{Node: "n1", LeafID: "l1"}},
+	}
+	res, err := o.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Append happens for: start, 1 leaf entry, leaf-ok, done = 4 attempts.
+	if len(res.LedgerErrs) != 4 {
+		t.Errorf("LedgerErrs = %d, want 4 (start + 1 leaf entry + leaf-ok + done); errs=%v",
+			len(res.LedgerErrs), res.LedgerErrs)
+	}
+	for _, e := range res.LedgerErrs {
+		if e == nil || e.Error() == "" {
+			t.Errorf("ledger err is empty: %v", e)
+		}
+	}
+	// Per-leaf work succeeded; OK should still reflect that.
+	if !res.OK {
+		t.Errorf("expected OK=true (per-leaf work succeeded; only ledger Append failed)")
+	}
+}

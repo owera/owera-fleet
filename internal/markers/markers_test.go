@@ -2,6 +2,8 @@ package markers_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -123,5 +125,43 @@ func TestEmptyPipelineOrStep(t *testing.T) {
 	}
 	if err := s.Write(markers.Marker{Pipeline: "p", InputHash: "h"}); err == nil {
 		t.Error("expected error for empty step")
+	}
+}
+
+// TestListAllSurfacesCorruptMarkers writes one valid marker and one
+// corrupt JSON file, then calls ListAll. The good marker must come back
+// in `markers`; the bad one must come back in `failures` with a
+// non-nil Err. List() (the silent-skip variant) must keep returning
+// only the good marker for back-compat.
+func TestListAllSurfacesCorruptMarkers(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := markers.NewStore(dir)
+	if err := s.Write(markers.Marker{Pipeline: "p", Step: "good", InputHash: "h"}); err != nil {
+		t.Fatalf("write good: %v", err)
+	}
+	// Hand-write a corrupt marker JSON next to it.
+	pdir := filepath.Join(dir, "p")
+	if err := os.WriteFile(filepath.Join(pdir, "broken.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write broken: %v", err)
+	}
+
+	good, bad, err := s.ListAll("p")
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(good) != 1 || good[0].Step != "good" {
+		t.Errorf("good markers = %+v, want exactly 'good'", good)
+	}
+	if len(bad) != 1 || bad[0].Step != "broken" || bad[0].Err == nil {
+		t.Errorf("failures = %+v, want exactly broken with non-nil Err", bad)
+	}
+
+	// Legacy List() drops failures silently for back-compat.
+	legacy, err := s.List("p")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(legacy) != 1 {
+		t.Errorf("List should return only good markers, got %d", len(legacy))
 	}
 }

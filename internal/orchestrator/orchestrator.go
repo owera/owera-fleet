@@ -66,13 +66,21 @@ type Plan struct {
 // Cancelled is true if Execute returned because its ctx was cancelled before
 // every leaf could finish; OK is forced to false in that case so callers
 // don't have to special-case the cancellation when computing roll-ups.
+//
+// LedgerErrs is the list of errors encountered while appending entries to
+// the parent ledger. Ledger-append failures do not flip OK to false — the
+// per-leaf work may have completed successfully even when the audit-trail
+// write later failed (disk full, fsync error). Callers that treat the
+// audit record as load-bearing should check len(LedgerErrs) and
+// re-record or alert separately.
 type SwarmResult struct {
-	TaskID    string
-	Leaves    []LeafResult
-	OK        bool
-	Cancelled bool
-	StartedAt time.Time
-	EndedAt   time.Time
+	TaskID     string
+	Leaves     []LeafResult
+	OK         bool
+	Cancelled  bool
+	StartedAt  time.Time
+	EndedAt    time.Time
+	LedgerErrs []error
 }
 
 // Orchestrator drives a swarm and merges per-leaf ledger entries into the
@@ -175,10 +183,18 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 	// instead of the usual leaf-error / done pair.
 	cancelled := ctx.Err() != nil
 
-	// Merge per-leaf entries into the parent ledger.
+	// Merge per-leaf entries into the parent ledger. Append failures are
+	// collected into result.LedgerErrs rather than ignored — disk-full
+	// or fsync errors would otherwise leave the swarm reporting OK with
+	// a silently-truncated audit trail.
 	if o.Ledger != nil {
-		// Parent "swarm_start" marker.
-		_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+		writeEntry := func(e ledger.Entry) {
+			if err := o.Ledger.Append(plan.TaskID, e); err != nil {
+				result.LedgerErrs = append(result.LedgerErrs,
+					fmt.Errorf("ledger append phase=%s action=%s: %w", e.Phase, e.Action, err))
+			}
+		}
+		writeEntry(ledger.Entry{
 			TenantID: plan.TenantID,
 			Phase:    "swarm",
 			Action:   "start:" + plan.ParentRun,
@@ -186,18 +202,18 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 		})
 		for _, lr := range results {
 			for _, e := range lr.Entries {
-				// Re-emit each leaf entry under the parent task ID, with the
-				// leaf's existing phase preserved. The plan's TenantID is
-				// authoritative: a leaf runner that left TenantID empty
-				// inherits it here so billing entries always carry the
-				// customer-plane identity end-to-end. A leaf that already set
-				// a different TenantID is left alone — the orchestrator
-				// trusts the runner's explicit choice.
+				// Re-emit each leaf entry under the parent task ID,
+				// preserving the leaf's existing phase. The plan's
+				// TenantID is authoritative: a leaf runner that left
+				// TenantID empty inherits it here so billing entries
+				// always carry the customer-plane identity. A leaf that
+				// already set a different TenantID is left alone — the
+				// orchestrator trusts the runner's explicit choice.
 				e.TaskID = plan.TaskID
 				if e.TenantID == "" {
 					e.TenantID = plan.TenantID
 				}
-				_ = o.Ledger.Append(plan.TaskID, e)
+				writeEntry(e)
 			}
 			if cancelled {
 				// Skip per-leaf ok/error spam — the explicit
@@ -205,7 +221,7 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 				continue
 			}
 			if lr.Err != nil {
-				_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+				writeEntry(ledger.Entry{
 					TenantID:   plan.TenantID,
 					Phase:      "swarm",
 					Action:     "leaf-error:" + lr.LeafID,
@@ -213,7 +229,7 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 					DurationMs: lr.Duration.Milliseconds(),
 				})
 			} else {
-				_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+				writeEntry(ledger.Entry{
 					TenantID:   plan.TenantID,
 					Phase:      "swarm",
 					Action:     "leaf-ok:" + lr.LeafID,
@@ -225,7 +241,7 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 		if cancelled {
 			// Authoritative cancel marker — billing must NOT emit a
 			// usage (`ResultBill`) record when this entry is present.
-			_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+			writeEntry(ledger.Entry{
 				TenantID: plan.TenantID,
 				Phase:    "swarm",
 				Action:   "cancel",
@@ -236,7 +252,7 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 			if !result.OK {
 				final = ledger.ResultError
 			}
-			_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+			writeEntry(ledger.Entry{
 				TenantID: plan.TenantID,
 				Phase:    "swarm",
 				Action:   "done:" + plan.ParentRun,

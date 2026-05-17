@@ -24,14 +24,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # `fleetctl verify` itself runs go build, go vet, go test -race,
+      # and gen-skills --check as shell-out checks (see
+      # internal/verify.DefaultChecks). Running them as separate workflow
+      # steps would double the CI wall time. Keep a single build step
+      # only to fail fast with a clear "go build" status if the binary
+      # itself doesn't compile.
       - name: go build ./...
         run: go build ./...
-
-      - name: go test -race ./...
-        run: go test -race ./...
-
-      - name: skill manifest drift gate
-        run: go run ./cmd/fleetctl gen-skills --check
 
       - name: fleetctl verify --json
         run: go run ./cmd/fleetctl verify --json | tee verify.json
