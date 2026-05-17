@@ -44,8 +44,10 @@ The default bind is 127.0.0.1:9091 — production deployments expose the
 port to the tunnel only, never to the public internet. There is no
 auth layer at this CLI; trust is gated by the tunnel.
 
-Registered methods (more land as parallel agents finish):
-  fleet.SubmitJob   {tenant_id, sku, cloud_job_id, inputs} → {task_id}
+Registered methods:
+  fleet.SubmitJob       {tenant_id, sku, cloud_job_id, inputs} → {task_id}
+  fleet.CancelTask      {task_id} → {cancelled}
+  fleet.HealthSnapshot  {} → {ts, gateway, workers, sku_conformance}
 
 The server blocks until SIGINT/SIGTERM, then drains in-flight requests
 up to --timeout and exits.`,
@@ -93,6 +95,27 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Delegate: makeServeDelegateFunc(),
 	})
 	srv.Register("fleet.SubmitJob", submit.Handle)
+
+	// fleet.CancelTask — looks up the task in runregistry and invokes
+	// its cancel func. Cancellation propagates through the SubmitJob
+	// orchestrator context (registered by the submit handler) and the
+	// in-flight delegate/swarm primitives bound to that context.
+	srv.Register("fleet.CancelTask", rpc.CancelTask)
+
+	// fleet.HealthSnapshot — 30s-cached gateway/worker/SKU snapshot
+	// consumed by owera-cloud's /readyz and status.owera.ai. The
+	// snapshot reads ledger metadata read-only, so we point it at
+	// the same ledger dir the submit handler writes into.
+	hermesHome, err := expandHomePath("~/.hermes")
+	if err != nil {
+		return fmt.Errorf("serve: expand hermes home: %w", err)
+	}
+	health := rpc.NewHealthSnapshotHandler(rpc.DefaultDeps(
+		hermesHome+"/logs",
+		hermesHome+"/nodes.txt",
+		ledgerDir,
+	))
+	srv.Register("fleet.HealthSnapshot", health.Handle)
 
 	_ = logger.Action(log.Event{
 		Node:   "gateway",

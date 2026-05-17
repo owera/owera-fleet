@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/owera/owera-fleet/internal/ledger"
+	"github.com/owera/owera-fleet/internal/runregistry"
 )
 
 // SubmitJobParams is the wire shape for fleet.SubmitJob.
@@ -205,7 +206,15 @@ func (h *SubmitJobHandler) Handle(ctx context.Context, raw json.RawMessage) (any
 		}
 	}
 
-	if err := router.Dispatch(ctx, taskID, p.TenantID, p.Inputs); err != nil {
+	// Register a cancellable child ctx under taskID so fleet.CancelTask
+	// can interrupt this dispatch via runregistry. Defers ensure the
+	// entry is removed whether dispatch succeeds, errors, or is cancelled.
+	dispatchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	runregistry.Register(taskID, cancel)
+	defer runregistry.Unregister(taskID)
+
+	if err := router.Dispatch(dispatchCtx, taskID, p.TenantID, p.Inputs); err != nil {
 		if h.Ledger != nil {
 			_ = h.Ledger.Append(taskID, ledger.Entry{
 				Ts:         h.Now(),
