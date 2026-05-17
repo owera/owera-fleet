@@ -1,11 +1,13 @@
 name: usecase32_marketing_swarm
 tier: 3
 description: |
-  v2 §3.2 marketing fan-out use case — primitive-level exercise of the
-  `fleetctl swarm` CLI surface. Swarm has no --dry-run flag and requires
-  live SSH targets to do real work, so this scenario stays at the
-  help-text-and-ledger-integrity layer; the live fan-out path is exercised
-  by the fleet-usecase-demos Layer 3 pass against real workers.
+  v2 §3.2 marketing fan-out — primitive-level CLI smoke for `fleetctl
+  swarm`. This scenario verifies the CLI surface (help text, flag wiring,
+  empty-target rejection) and ledger integrity after the surface is
+  exercised. It does NOT exercise the real fan-out path — swarm has no
+  --dry-run flag and requires live SSH targets to mutate; that live
+  path is covered by the fleet-usecase-demos Layer 3 pass against real
+  workers in the hermes-setup repo.
 
 steps:
   # 1. Help text mentions every advertised swarm flag.
@@ -33,12 +35,14 @@ steps:
       exit: 0
       stdout_contains: "--retry"
 
-  # 2. Empty target set without --all / --target rejects cleanly (no crash).
+  # 2. Empty target set without --all / --target rejects with a clear
+  # error and exit 1 (cobra's default for RunE errors). The previous
+  # `|| true` masked the real exit code and made this step a no-op.
   - name: swarm-rejects-empty-targets
-    run: bin/fleetctl swarm --cmd "uptime" 2>&1 || true
+    run: bin/fleetctl swarm --cmd "uptime"
     expect:
-      exit: 0
-      stdout_contains: "--all"
+      exit: 1
+      stderr_contains: "--all or one or more --target are required"
 
   # 3. Ledger remains signature-valid before/after the swarm CLI surface
   # was exercised. (No mutating swarm ran, so VerifyAll must still succeed.)

@@ -1,12 +1,14 @@
 name: usecase33_ticket_triage
 tier: 3
 description: |
-  v2 §3.3 ticket-triage use case — exercises `fleetctl cronjob` and
-  `fleetctl run-with-secrets`. The cronjob list path shells out to
-  `hermes cronjob` which is not present on this Hermes build, so this
-  scenario uses the help surface as the cronjob primitive check (parallels
-  the swarm help-text fallback in usecase32) while exercising the
-  run-with-secrets contract directly.
+  v2 §3.3 ticket-triage primitive exercise. Two layers of coverage:
+  CLI smokes for `fleetctl cronjob` and `fleetctl alert` (help-text
+  wiring only — these commands depend on a `hermes cronjob` binary not
+  present on this build, or on backend env vars), and SUBSTANTIVE
+  contract tests for `fleetctl run-with-secrets` (env-leak prevention
+  on stdin path, opt-in injection on --use-env path). The run-with-secrets
+  steps are real end-to-end exercises and previously surfaced the
+  stdout-swallowing bug that was fixed during PR #1 shake-down.
 
 steps:
   # 1. cronjob CLI surface is wired (help text enumerates subcommands).
