@@ -146,30 +146,57 @@ func (s *Store) Invalidate(pipeline, step string) error {
 	return err
 }
 
-// List returns all markers for a pipeline sorted by step name.
+// List returns all successfully-readable markers for a pipeline sorted by
+// step name. Markers that fail to parse are silently dropped — callers
+// that need visibility into per-entry failures should use [ListAll].
 func (s *Store) List(pipeline string) ([]*Marker, error) {
+	markers, _, err := s.ListAll(pipeline)
+	return markers, err
+}
+
+// ListEntry is one (marker, err) pair from [ListAll]. Exactly one of
+// Marker / Err is non-nil; Step is always populated so the caller can
+// identify which step failed without parsing Err.
+type ListEntry struct {
+	Step   string
+	Marker *Marker
+	Err    error
+}
+
+// ListAll returns all marker filenames under a pipeline, attempting to
+// parse each, and exposes both successful markers and per-step errors so
+// the caller can distinguish "step never ran" (absent) from "step ran
+// but the marker is unreadable" (present, parse error). Returned markers
+// are sorted by step name; failures are sorted alphabetically among
+// themselves.
+//
+// The top-level error is reserved for I/O failures on the directory
+// itself (e.g. permission denied reading the pipeline dir); per-marker
+// errors land in the failures slice, never in the top-level error.
+func (s *Store) ListAll(pipeline string) (markers []*Marker, failures []ListEntry, err error) {
 	dir := filepath.Join(s.dir, pipeline)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("markers: list: %w", err)
+		return nil, nil, fmt.Errorf("markers: list: %w", err)
 	}
-	var out []*Marker
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		step := strings.TrimSuffix(e.Name(), ".json")
-		m, err := s.Read(pipeline, step)
-		if err != nil {
+		m, rerr := s.Read(pipeline, step)
+		if rerr != nil {
+			failures = append(failures, ListEntry{Step: step, Err: rerr})
 			continue
 		}
-		out = append(out, m)
+		markers = append(markers, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Step < out[j].Step })
-	return out, nil
+	sort.Slice(markers, func(i, j int) bool { return markers[i].Step < markers[j].Step })
+	sort.Slice(failures, func(i, j int) bool { return failures[i].Step < failures[j].Step })
+	return markers, failures, nil
 }
 
 // Pipelines returns the set of pipeline directories under the store.

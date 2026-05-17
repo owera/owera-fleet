@@ -3,8 +3,10 @@ package ledger_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,5 +154,86 @@ func TestTimestampFilled(t *testing.T) {
 	entries, _ := l.Read("ts")
 	if entries[0].Ts.Before(before) || entries[0].Ts.After(after) {
 		t.Errorf("Ts %v not in [%v, %v]", entries[0].Ts, before, after)
+	}
+}
+
+// TestAppendConcurrent — N goroutines all append to the same task file
+// in parallel. After they all finish, Read must return exactly N entries
+// and every signature must verify. Pre-fix (no fsync) this could still
+// race on the os.OpenFile + Write + Close cycle if Append's internals
+// regress; pins the contract for the future.
+func TestAppendConcurrent(t *testing.T) {
+	const N = 64
+	dir := t.TempDir()
+	l, err := ledger.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	var wg sync.WaitGroup
+	var failed int32
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := l.Append("concurrent", ledger.Entry{
+				Phase:  "p",
+				Action: fmt.Sprintf("a-%d", i),
+				Result: ledger.ResultOK,
+			}); err != nil {
+				t.Errorf("Append %d: %v", i, err)
+				failed = 1
+			}
+		}(i)
+	}
+	wg.Wait()
+	if failed != 0 {
+		return
+	}
+	entries, err := l.Read("concurrent")
+	if err != nil {
+		t.Fatalf("Read after concurrent append: %v", err)
+	}
+	if len(entries) != N {
+		t.Errorf("got %d entries, want %d — concurrent appends raced or were lost", len(entries), N)
+	}
+}
+
+// TestTruncatedTailSurfacesError — write three entries, then truncate
+// the file in the middle of the last line. Read must surface a clear
+// parse or signature error rather than silently returning two clean
+// entries plus a half-line that looked like a different valid entry.
+func TestTruncatedTailSurfacesError(t *testing.T) {
+	dir := t.TempDir()
+	l, err := ledger.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := l.Append("trunc", ledger.Entry{
+			Phase:  "p",
+			Action: fmt.Sprintf("a-%d", i),
+			Result: ledger.ResultOK,
+		}); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+	path := filepath.Join(dir, "trunc.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// Chop off the last 40 bytes — enough to mangle the final line's
+	// signature without removing the entire third entry. The truncated
+	// line is no longer valid JSON or has a bad signature; either is an
+	// error.
+	if len(data) < 60 {
+		t.Fatalf("file too small to truncate meaningfully: %d bytes", len(data))
+	}
+	if err := os.WriteFile(path, data[:len(data)-40], 0o600); err != nil {
+		t.Fatalf("rewrite truncated: %v", err)
+	}
+	_, err = l.Read("trunc")
+	if err == nil {
+		t.Errorf("Read should surface an error for a truncated tail line; got nil")
 	}
 }
