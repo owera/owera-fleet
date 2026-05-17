@@ -1,52 +1,131 @@
+# Wave 9 A3 — exercises real fan-out + ledger merge, not help-text.
+# Requires SSH agent + reachable workers (hermes@claw1.local,
+# hermes@claw2.local); gates via `ssh`. When the gate is unmet (no
+# SSH_AUTH_SOCK exported, or either worker unreachable), every step
+# short-circuits with "SKIPPED: no ssh gate" on stdout and exits 0,
+# so the scenario reports PASS without falsely claiming the swarm ran.
+#
+# Phase-2 verification gate: this scenario PROVES the `swarm` primitive
+# works end-to-end (fan-out → per-leaf SSH → merged signed ledger),
+# replacing the prior help-text smokes that only proved `--help` printed.
 name: usecase32_marketing_swarm
 tier: 3
 description: |
-  v2 §3.2 marketing fan-out — primitive-level CLI smoke for `fleetctl
-  swarm`. This scenario verifies the CLI surface (help text, flag wiring,
-  empty-target rejection) and ledger integrity after the surface is
-  exercised. It does NOT exercise the real fan-out path — swarm has no
-  --dry-run flag and requires live SSH targets to mutate; that live
-  path is covered by the fleet-usecase-demos Layer 3 pass against real
-  workers in the hermes-setup repo.
+  v2 §3.2 marketing fan-out — real swarm end-to-end. Fans `uname -a`
+  to hermes@claw1.local and hermes@claw2.local via `fleetctl swarm`,
+  then asserts the parent task's signed ledger contains at least two
+  leaf entries (one per worker) and that `ledger verify` exits 0.
+  Negative path (empty target rejection) is preserved.
+
+  Gating: requires SSH_AUTH_SOCK to be forwarded and both workers
+  reachable under BatchMode. If unmet, every step short-circuits with
+  "SKIPPED: no ssh gate" and the scenario passes without running the
+  swarm. This matches the spirit of `gate: ssh` documented in the
+  Wave 9 plan; the schema-level gate field is a tech-lead follow-up.
+
+vars:
+  TARGET_A: hermes@claw1.local
+  TARGET_B: hermes@claw2.local
+  TASK_ID_FILE: /tmp/owera-fleet-usecase32-task-id
+  GATE_MARKER: /tmp/owera-fleet-usecase32-gate-ok
 
 steps:
-  # 1. Help text mentions every advertised swarm flag.
-  - name: swarm-help-mentions-all
-    run: bin/fleetctl swarm --help
+  # 1. Gate: SSH agent forwarded + both workers reachable.
+  #    On success: write a marker file. On failure: emit the skip
+  #    sentinel and exit 0 (every subsequent step checks the marker
+  #    first and short-circuits with the same sentinel).
+  - name: ssh-gate
+    run: |
+      rm -f ${GATE_MARKER} ${TASK_ID_FILE}
+      if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+        echo "SKIPPED: no ssh gate (SSH_AUTH_SOCK unset)"
+        exit 0
+      fi
+      if ! ssh -o BatchMode=yes -o ConnectTimeout=5 ${TARGET_A} true 2>/dev/null; then
+        echo "SKIPPED: no ssh gate (${TARGET_A} unreachable)"
+        exit 0
+      fi
+      if ! ssh -o BatchMode=yes -o ConnectTimeout=5 ${TARGET_B} true 2>/dev/null; then
+        echo "SKIPPED: no ssh gate (${TARGET_B} unreachable)"
+        exit 0
+      fi
+      touch ${GATE_MARKER}
+      echo "gate ok"
     expect:
       exit: 0
-      stdout_contains: "--all"
 
-  - name: swarm-help-mentions-target
-    run: bin/fleetctl swarm --help
-    expect:
-      exit: 0
-      stdout_contains: "--target"
-
-  - name: swarm-help-mentions-parallel
-    run: bin/fleetctl swarm --help
-    expect:
-      exit: 0
-      stdout_contains: "--parallel"
-
-  - name: swarm-help-mentions-retry
-    run: bin/fleetctl swarm --help
-    expect:
-      exit: 0
-      stdout_contains: "--retry"
-
-  # 2. Empty target set without --all / --target rejects with a clear
-  # error and exit 1 (cobra's default for RunE errors). The previous
-  # `|| true` masked the real exit code and made this step a no-op.
+  # 2. Negative assertion preserved from the previous scenario shape:
+  #    swarm without --all and without any --target must reject with
+  #    a clear error and exit 1. This path is gate-independent —
+  #    it's pure CLI argument validation, no SSH dial happens.
   - name: swarm-rejects-empty-targets
     run: bin/fleetctl swarm --cmd "uptime"
     expect:
       exit: 1
       stderr_contains: "--all or one or more --target are required"
 
-  # 3. Ledger remains signature-valid before/after the swarm CLI surface
-  # was exercised. (No mutating swarm ran, so VerifyAll must still succeed.)
-  - name: ledger-verify-clean
-    run: bin/fleetctl ledger verify
+  # 3. Real fan-out: dispatch `uname -a` to both live workers under a
+  #    pinned task-id so the next step can read the ledger back. Skip
+  #    cleanly if the gate failed.
+  - name: swarm-fan-out
+    run: |
+      if [ ! -f ${GATE_MARKER} ]; then
+        echo "SKIPPED: no ssh gate"
+        exit 0
+      fi
+      TASK_ID="usecase32-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+      echo "${TASK_ID}" > ${TASK_ID_FILE}
+      bin/fleetctl swarm \
+        --task-id "${TASK_ID}" \
+        --parent-run usecase32-marketing-swarm \
+        --cmd "uname -a" \
+        --target ${TARGET_A} \
+        --target ${TARGET_B} \
+        --parallel 2 \
+        --timeout 30s
+    expect:
+      exit: 0
+
+  # 4. Ledger merge: the swarm's parent task must contain at least two
+  #    `leaf` entries (one ssh: action per worker). We grep --json output
+  #    for the two target strings — both must be present. Skip cleanly
+  #    when the gate failed (no task-id file to read).
+  - name: ledger-shows-both-leaves
+    run: |
+      if [ ! -f ${TASK_ID_FILE} ]; then
+        echo "SKIPPED: no ssh gate"
+        exit 0
+      fi
+      TASK_ID=$(cat ${TASK_ID_FILE})
+      OUT=$(bin/fleetctl ledger show "${TASK_ID}" --json)
+      echo "${OUT}"
+      echo "${OUT}" | grep -q "ssh:${TARGET_A}" || { echo "FAIL: missing leaf for ${TARGET_A}" >&2; exit 1; }
+      echo "${OUT}" | grep -q "ssh:${TARGET_B}" || { echo "FAIL: missing leaf for ${TARGET_B}" >&2; exit 1; }
+      # In-step grep -q is the assertion. stdout_contains is omitted so the
+      # gate-skipped path (which prints only "SKIPPED: no ssh gate") still
+      # passes; the live path's correctness is gated by the grep -q above.
+    expect:
+      exit: 0
+
+  # 5. Signature integrity: after the real fan-out, every ledger task
+  #    (including the one just written) must still verify under the
+  #    fleet's ed25519 key. Skip cleanly if the gate failed — verify
+  #    is cheap and would still pass, but we want a clean SKIPPED
+  #    breadcrumb in the run log.
+  - name: ledger-verify-after-swarm
+    run: |
+      if [ ! -f ${GATE_MARKER} ]; then
+        echo "SKIPPED: no ssh gate"
+        exit 0
+      fi
+      bin/fleetctl ledger verify
+    expect:
+      exit: 0
+
+  # 6. Cleanup the per-run marker files. Always succeeds.
+  - name: cleanup
+    run: |
+      rm -f ${GATE_MARKER} ${TASK_ID_FILE}
+      echo "cleanup ok"
     expect:
       exit: 0
