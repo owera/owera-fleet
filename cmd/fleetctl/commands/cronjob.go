@@ -22,6 +22,7 @@ var (
 	cjEnv      []string
 	cjTags     []string
 	cjJSON     bool
+	cjDryRun   bool
 )
 
 var cronjobCmd = &cobra.Command{
@@ -70,6 +71,7 @@ func init() {
 	cjInstallCmd.Flags().StringVar(&cjCommand, "command", "", "command Hermes should run (required)")
 	cjInstallCmd.Flags().StringSliceVar(&cjEnv, "env", nil, "env var KEY=VALUE (repeatable)")
 	cjInstallCmd.Flags().StringSliceVar(&cjTags, "tag", nil, "tag (repeatable)")
+	cjInstallCmd.Flags().BoolVar(&cjDryRun, "dry-run", false, "print the resolved Job spec without calling hermes cronjob")
 
 	cronjobCmd.AddCommand(cjListCmd, cjInstallCmd, cjRemoveCmd, cjStatusCmd)
 	rootCmd.AddCommand(cronjobCmd)
@@ -116,6 +118,23 @@ func runCronjobInstall(cmd *cobra.Command, _ []string) error {
 		Env:      env,
 		Tags:     cjTags,
 		Enabled:  true,
+	}
+	if cjDryRun {
+		w := cmd.OutOrStdout()
+		if cjJSON {
+			return json.NewEncoder(w).Encode(job)
+		}
+		fmt.Fprintf(w, "DRY-RUN: would install cronjob\n")
+		fmt.Fprintf(w, "  Name:     %s\n", job.Name)
+		fmt.Fprintf(w, "  Schedule: %s\n", job.Schedule)
+		fmt.Fprintf(w, "  Command:  %s\n", job.Command)
+		if len(job.Env) > 0 {
+			fmt.Fprintf(w, "  Env:      %v\n", job.Env)
+		}
+		if len(job.Tags) > 0 {
+			fmt.Fprintf(w, "  Tags:     %v\n", job.Tags)
+		}
+		return nil
 	}
 	mgr := cronjobManager()
 	created, err := mgr.Install(cmd.Context(), job)
@@ -174,9 +193,11 @@ func cronjobSkill() Skill {
 			{Name: "status <name>", Description: "Show a job's state + last run."},
 			{Name: "--env KEY=VALUE", Description: "Per-job env var (repeatable)."},
 			{Name: "--tag T", Description: "Per-job tag (repeatable)."},
+			{Name: "--dry-run", Description: "Print the resolved Job spec (install only) without calling hermes cronjob."},
 		},
 		Examples: []SkillExample{
 			{Description: "Install ticket triage poller", Command: "fleetctl cronjob install --name triage --schedule '*/5 * * * *' --command 'hermes z \"triage ticket queue\"'"},
+			{Description: "Preview the install plan", Command: "fleetctl cronjob install --name triage --schedule '*/5 * * * *' --command 'echo hi' --dry-run"},
 			{Description: "List jobs as JSON", Command: "fleetctl cronjob list --json"},
 		},
 	}

@@ -33,6 +33,7 @@ var (
 	swarmLedgerDir string
 	swarmTimeout   time.Duration
 	swarmJSON      bool
+	swarmDryRun    bool
 	swarmLogPath   = "~/.hermes/logs/swarm.jsonl"
 )
 
@@ -62,6 +63,7 @@ func init() {
 	swarmCmd.Flags().StringVar(&swarmLedgerDir, "ledger-dir", "~/.hermes/ledger", "ledger directory")
 	swarmCmd.Flags().DurationVar(&swarmTimeout, "timeout", 5*time.Minute, "per-leaf timeout")
 	swarmCmd.Flags().BoolVar(&swarmJSON, "json", false, "emit JSON report")
+	swarmCmd.Flags().BoolVar(&swarmDryRun, "dry-run", false, "resolve the leaf plan and print it without dialing SSH")
 	rootCmd.AddCommand(swarmCmd)
 }
 
@@ -134,6 +136,19 @@ func runSwarm(cmd *cobra.Command, _ []string) error {
 			LeafID:  fmt.Sprintf("leaf-%02d", i+1),
 			Payload: map[string]any{"cmd": swarmCmdStr, "host": t.Host, "user": t.User},
 		})
+	}
+
+	if swarmDryRun {
+		w := cmd.OutOrStdout()
+		if swarmJSON {
+			return json.NewEncoder(w).Encode(plan)
+		}
+		fmt.Fprintf(w, "DRY-RUN: would dispatch task=%s parent-run=%s parallel=%d retry=%d timeout=%s\n",
+			plan.TaskID, plan.ParentRun, plan.MaxParallel, plan.RetryEach, swarmTimeout)
+		for _, leaf := range plan.Leaves {
+			fmt.Fprintf(w, "  %s -> %s: %s\n", leaf.LeafID, leaf.Node, swarmCmdStr)
+		}
+		return nil
 	}
 
 	o := &orchestrator.Orchestrator{
@@ -248,10 +263,12 @@ func swarmSkill() Skill {
 			{Name: "--task-id ID", Description: "Override parent task ID."},
 			{Name: "--timeout DUR", Description: "Per-leaf timeout (default 5m)."},
 			{Name: "--json", Description: "Emit JSON report."},
+			{Name: "--dry-run", Description: "Resolve the leaf plan and print it without dialing SSH."},
 		},
 		Examples: []SkillExample{
 			{Description: "Marketing fan-out", Command: "fleetctl swarm --cmd \"hermes z 'post launch tweet'\" --all"},
 			{Description: "Multi-target uptime", Command: "fleetctl swarm --cmd uptime --target claw1.local --target claw2.local --parallel 2"},
+			{Description: "Preview the plan", Command: "fleetctl swarm --cmd uptime --all --dry-run"},
 		},
 	}
 }
