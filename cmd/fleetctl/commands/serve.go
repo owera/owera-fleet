@@ -48,6 +48,7 @@ Registered methods:
   fleet.SubmitJob       {tenant_id, sku, cloud_job_id, inputs} → {task_id}
   fleet.CancelTask      {task_id} → {cancelled}
   fleet.HealthSnapshot  {} → {ts, gateway, workers, sku_conformance}
+  fleet.LedgerTail      {task_id, after_ts?} → {entries, cursor}
 
 The server blocks until SIGINT/SIGTERM, then drains in-flight requests
 up to --timeout and exits.`,
@@ -116,6 +117,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		ledgerDir,
 	))
 	srv.Register("fleet.HealthSnapshot", health.Handle)
+
+	// fleet.LedgerTail — cursor-based polling of a task's signed
+	// ledger. Customer-plane dispatcher (owera-cloud) polls this to
+	// advance job state without re-reading the whole file on each
+	// cycle. The handler is read-only against the same ledger dir
+	// submit writes into.
+	tail := rpc.NewLedgerTailHandler(led)
+	srv.Register("fleet.LedgerTail", tail.Handle)
 
 	_ = logger.Action(log.Event{
 		Node:   "gateway",
