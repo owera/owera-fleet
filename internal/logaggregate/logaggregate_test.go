@@ -74,7 +74,7 @@ type runnerResp struct {
 	err            error
 }
 
-func (r *recordingRunner) run(ctx context.Context, target, cmd string) (string, string, int, error) {
+func (r *recordingRunner) run(ctx context.Context, target, cmd string) ([]byte, string, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.rotateSeen == nil {
@@ -82,15 +82,15 @@ func (r *recordingRunner) run(ctx context.Context, target, cmd string) (string, 
 	}
 	if strings.Contains(cmd, "gzip -f") {
 		r.rotateSeen[target] = true
-		return "", "", 0, nil
+		return nil, "", 0, nil
 	}
 	q, ok := r.responses[target]
 	if !ok || len(q) == 0 {
-		return "", "no scripted response", 1, errors.New("logaggregate-test: no scripted response for target " + target)
+		return nil, "no scripted response", 1, errors.New("logaggregate-test: no scripted response for target " + target)
 	}
 	next := q[0]
 	r.responses[target] = q[1:]
-	return next.stdout, next.stderr, next.exit, next.err
+	return []byte(next.stdout), next.stderr, next.exit, next.err
 }
 
 // TestRunHappyPathTwoNodes proves the aggregator extracts tarballs from

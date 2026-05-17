@@ -78,21 +78,24 @@ func init() {
 // SSH dialer into the SSHRunner shape the aggregator consumes.
 var newLogAggregateRunner = func(timeout time.Duration) logaggregate.SSHRunner {
 	dialer := newDialer(osh.WithConnectTimeout(timeout))
-	return func(ctx context.Context, target string, cmd string) (string, string, int, error) {
+	return func(ctx context.Context, target string, cmd string) ([]byte, string, int, error) {
 		t, err := osh.ParseTarget(target)
 		if err != nil {
-			return "", err.Error(), -1, fmt.Errorf("parse target %q: %w", target, err)
+			return nil, err.Error(), -1, fmt.Errorf("parse target %q: %w", target, err)
 		}
 		client, err := dialer.Dial(ctx, t, osh.WithConnectTimeout(timeout))
 		if err != nil {
-			return "", err.Error(), -1, err
+			return nil, err.Error(), -1, err
 		}
 		defer client.Close()
 		res, runErr := client.Run(ctx, cmd)
+		// SSH client returns stdout as string; convert to []byte so
+		// binary streams (gzip tarballs from pullCmd) survive round-trip
+		// without any implicit UTF-8 sanitisation in the SSH library.
 		if runErr != nil {
-			return res.Stdout, res.Stderr, res.ExitCode, runErr
+			return []byte(res.Stdout), res.Stderr, res.ExitCode, runErr
 		}
-		return res.Stdout, res.Stderr, res.ExitCode, nil
+		return []byte(res.Stdout), res.Stderr, res.ExitCode, nil
 	}
 }
 

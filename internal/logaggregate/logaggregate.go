@@ -68,11 +68,12 @@ const DefaultKeepDays = 30
 const remoteLogsGlob = "$HOME/.hermes/logs/*.jsonl"
 
 // SSHRunner is the injection seam for the SSH transport. Implementations
-// return the command's stdout (full bytes), stderr (used for error
+// return the command's stdout as raw bytes (so binary tarballs survive
+// round-trip without UTF-8 sanitisation), stderr (used for error
 // messages), exit code, and any transport-level error. Tests substitute
 // a fake that synthesizes tarball bytes; production wires the
 // [internal/ssh] dialer through [NewSSHRunner].
-type SSHRunner func(ctx context.Context, target, cmd string) (stdout, stderr string, exitCode int, err error)
+type SSHRunner func(ctx context.Context, target, cmd string) (stdout []byte, stderr string, exitCode int, err error)
 
 // PullResult summarises one worker's pull cycle. Err carries the first
 // fatal error in the pull/extract/rotate sequence; FilesPulled and
@@ -231,7 +232,7 @@ func (a *Aggregator) pullOne(ctx context.Context, target string) PullResult {
 		}
 		// stdout is a single integer on its own line.
 		var n int
-		_, _ = fmt.Sscanf(strings.TrimSpace(stdout), "%d", &n)
+		_, _ = fmt.Sscanf(strings.TrimSpace(string(stdout)), "%d", &n)
 		res.FilesPulled = n
 		return res
 	}
@@ -243,12 +244,14 @@ func (a *Aggregator) pullOne(ctx context.Context, target string) PullResult {
 		return res
 	}
 
-	// The SSH command uses sh -c so the glob expands on the worker, not
-	// in the operator's local shell. 2>/dev/null swallows the spurious
-	// "No such file" tar emits when the glob matches zero files. We
-	// then check tar's exit code: a clean run with zero matches still
-	// exits 0 because we explicitly route stderr to /dev/null.
-	pullCmd := "sh -c 'tar -C $HOME/.hermes/logs -c -f - $(cd $HOME/.hermes/logs && ls *.jsonl 2>/dev/null) 2>/dev/null | gzip -c'"
+	// Zero matches and missing-logs-dir must produce a clean exit-0
+	// with empty output (the caller treats len(blob)==0 as "no new
+	// logs"). The previous form let `tar` run with no file arguments
+	// when the glob matched nothing — BSD tar errors, GNU tar warns,
+	// either bubbled up as a spurious exit-1 in the audit stream.
+	// Guard with explicit dir + glob existence tests so workers with
+	// no telemetry don't fail the cycle.
+	pullCmd := `sh -c 'd="$HOME/.hermes/logs"; [ -d "$d" ] || exit 0; cd "$d" || exit 0; if ls *.jsonl >/dev/null 2>&1; then tar -c -f - *.jsonl 2>/dev/null | gzip -c; fi'`
 	stdout, stderr, exit, err := a.SSHRunner(ctx, target, pullCmd)
 	if err != nil {
 		res.Err = fmt.Errorf("ssh pull: %w", err)
@@ -266,7 +269,7 @@ func (a *Aggregator) pullOne(ctx context.Context, target string) PullResult {
 		return res
 	}
 
-	files, bytes, err := extractTarGz([]byte(stdout), destDir)
+	files, bytes, err := extractTarGz(stdout, destDir)
 	res.FilesPulled = files
 	res.BytesPulled = bytes
 	if err != nil {
