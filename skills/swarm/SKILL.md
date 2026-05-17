@@ -23,6 +23,7 @@ Run an orchestrator + N leaf-subagent swarm with per-leaf ledger merge.
 | `--parallel N` | Max concurrent leaves (0 = unbounded). |
 | `--retry N` | Per-leaf retries on transient failure. |
 | `--task-id ID` | Override parent task ID. |
+| `--tenant-id ID` | Customer-plane tenant stamped onto every ledger entry (empty = operator-only). |
 | `--timeout DUR` | Per-leaf timeout (default 5m). |
 | `--json` | Emit JSON report. |
 

@@ -21,7 +21,9 @@ Inspect and verify the signed per-task ledger (list tasks, show entries, verify 
 | `show <task-id>` | Show entries for a task. |
 | `verify` | Verify ed25519 signatures across all ledger tasks. |
 | `--ledger-dir PATH` | Override ~/.hermes/ledger path. |
-| `--json` | Emit JSON output. |
+| `--json` | Emit JSON output (always includes tenant_id when set). |
+| `--show-tenant` | Include the tenant_id column in `ledger show` table output. |
+| `--by-tenant ID` | On `ledger show`: filter to entries whose tenant_id matches (cross-task). |
 
 ## Examples
 
@@ -35,6 +37,18 @@ fleetctl ledger list
 
 ```
 fleetctl ledger show task-abc123
+```
+
+**Show with tenant column:**
+
+```
+fleetctl ledger show task-abc123 --show-tenant
+```
+
+**Cross-task tenant view:**
+
+```
+fleetctl ledger show --by-tenant tenant-acme
 ```
 
 **Verify all signatures:**

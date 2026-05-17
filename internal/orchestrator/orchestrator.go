@@ -45,8 +45,16 @@ type LeafResult struct {
 type LeafRunner func(ctx context.Context, in LeafInput) ([]ledger.Entry, error)
 
 // Plan describes the work for one swarm run.
+//
+// TenantID, when non-empty, is stamped onto every ledger entry the
+// orchestrator writes for this plan (the parent swarm markers as well as
+// every merged leaf entry). It propagates the customer-plane tenant identity
+// from `fleet.SubmitJob` (see issue #5) down to the lowest-level billing
+// rows, so the customer plane can reconcile against Stripe usage records
+// without joining on task ID. Operator-only swarms leave it empty.
 type Plan struct {
 	TaskID    string
+	TenantID  string
 	ParentRun string // free-form description, e.g. "campaign-swarm v2"
 	Leaves    []LeafInput
 	MaxParallel int // 0 = unbounded
@@ -140,19 +148,29 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 	if o.Ledger != nil {
 		// Parent "swarm_start" marker.
 		_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
-			Phase:  "swarm",
-			Action: "start:" + plan.ParentRun,
-			Result: ledger.ResultOK,
+			TenantID: plan.TenantID,
+			Phase:    "swarm",
+			Action:   "start:" + plan.ParentRun,
+			Result:   ledger.ResultOK,
 		})
 		for _, lr := range results {
 			for _, e := range lr.Entries {
 				// Re-emit each leaf entry under the parent task ID, with the
-				// leaf's existing phase preserved.
+				// leaf's existing phase preserved. The plan's TenantID is
+				// authoritative: a leaf runner that left TenantID empty
+				// inherits it here so billing entries always carry the
+				// customer-plane identity end-to-end. A leaf that already set
+				// a different TenantID is left alone — the orchestrator
+				// trusts the runner's explicit choice.
 				e.TaskID = plan.TaskID
+				if e.TenantID == "" {
+					e.TenantID = plan.TenantID
+				}
 				_ = o.Ledger.Append(plan.TaskID, e)
 			}
 			if lr.Err != nil {
 				_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+					TenantID:   plan.TenantID,
 					Phase:      "swarm",
 					Action:     "leaf-error:" + lr.LeafID,
 					Result:     ledger.ResultError,
@@ -160,6 +178,7 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 				})
 			} else {
 				_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+					TenantID:   plan.TenantID,
 					Phase:      "swarm",
 					Action:     "leaf-ok:" + lr.LeafID,
 					Result:     ledger.ResultOK,
@@ -172,9 +191,10 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 			final = ledger.ResultError
 		}
 		_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
-			Phase:  "swarm",
-			Action: "done:" + plan.ParentRun,
-			Result: final,
+			TenantID: plan.TenantID,
+			Phase:    "swarm",
+			Action:   "done:" + plan.ParentRun,
+			Result:   final,
 		})
 	}
 
