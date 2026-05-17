@@ -66,7 +66,6 @@ var (
 	bridgeOnce            bool
 	bridgeNodesPath       = "~/.hermes/nodes.txt"
 	bridgeHeartbeatsDir   = "~/.hermes/heartbeats"
-	bridgeWorkerSrcDir    = "~/.hermes/heartbeat" // legacy worker-side dir
 	bridgeLogPath         = "~/.hermes/logs/heartbeats-bridge.jsonl"
 	bridgeSSHTimeout      time.Duration
 )
