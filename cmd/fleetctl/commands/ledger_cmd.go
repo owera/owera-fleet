@@ -14,9 +14,11 @@ import (
 )
 
 var (
-	ledgerDir    string
-	ledgerTaskID string
-	ledgerJSON   bool
+	ledgerDir         string
+	ledgerTaskID      string
+	ledgerJSON        bool
+	ledgerShowTenant  bool
+	ledgerByTenantID  string
 )
 
 var ledgerCmd = &cobra.Command{
@@ -35,9 +37,12 @@ var ledgerListCmd = &cobra.Command{
 
 var ledgerShowCmd = &cobra.Command{
 	Use:   "show <task-id>",
-	Short: "Show signed entries for a task",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runLedgerShow,
+	Short: "Show signed entries for a task (or for a tenant via --by-tenant)",
+	// 0..1 args: 0 is only valid when --by-tenant is supplied (the cross-task
+	// tenant view). Validation of the combination happens in runLedgerShow
+	// so the user gets a precise error rather than cobra's generic count check.
+	Args: cobra.MaximumNArgs(1),
+	RunE: runLedgerShow,
 }
 
 var ledgerVerifyCmd = &cobra.Command{
@@ -51,6 +56,16 @@ func init() {
 	ledgerCmd.PersistentFlags().BoolVar(&ledgerJSON, "json", false, "emit JSON output")
 	ledgerCmd.AddCommand(ledgerListCmd, ledgerShowCmd, ledgerVerifyCmd)
 	ledgerShowCmd.Flags().StringVar(&ledgerTaskID, "task", "", "task ID (overrides positional arg)")
+	// --show-tenant adds a tenant_id column to the column-display variant of
+	// `ledger show`. The JSON variant always emits the field (via
+	// omitempty) so machine consumers — notably the customer plane's
+	// Stripe reconciliation — don't need a flag to surface it.
+	ledgerShowCmd.Flags().BoolVar(&ledgerShowTenant, "show-tenant", false, "include the tenant_id column in human-readable show output")
+	// --by-tenant filters `ledger show` to entries whose tenant_id equals
+	// the value, scanning every task file. The positional task-id arg is
+	// ignored when this flag is set. Pass --by-tenant "" to surface
+	// operator-only entries (TenantID unset).
+	ledgerShowCmd.Flags().StringVar(&ledgerByTenantID, "by-tenant", "", "show entries whose tenant_id matches (across all task files)")
 	rootCmd.AddCommand(ledgerCmd)
 }
 
@@ -90,9 +105,25 @@ func runLedgerList(cmd *cobra.Command, _ []string) error {
 }
 
 func runLedgerShow(cmd *cobra.Command, args []string) error {
-	taskID := args[0]
+	// --by-tenant is its own selection mode (cross-task) and is mutually
+	// exclusive with a positional task-id / --task arg. Was-set is keyed off
+	// cobra's Changed bit rather than the empty string, because empty is a
+	// meaningful tenant value (operator-only entries).
+	byTenantSet := cmd.Flags().Changed("by-tenant")
+
+	var taskID string
+	if len(args) == 1 {
+		taskID = args[0]
+	}
 	if ledgerTaskID != "" {
 		taskID = ledgerTaskID
+	}
+
+	if byTenantSet && taskID != "" {
+		return fmt.Errorf("ledger show: --by-tenant is mutually exclusive with a task-id arg")
+	}
+	if !byTenantSet && taskID == "" {
+		return fmt.Errorf("ledger show: a task-id arg (or --by-tenant) is required")
 	}
 
 	dir, err := expandHomePath(ledgerDir)
@@ -103,7 +134,13 @@ func runLedgerShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	entries, err := l.Read(taskID)
+
+	var entries []iledger.Entry
+	if byTenantSet {
+		entries, err = l.ReadByTenant(ledgerByTenantID)
+	} else {
+		entries, err = l.Read(taskID)
+	}
 	if err != nil {
 		return fmt.Errorf("ledger show: %w", err)
 	}
@@ -113,13 +150,38 @@ func runLedgerShow(cmd *cobra.Command, args []string) error {
 	}
 
 	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "Task: %s  (%d entries)\n", taskID, len(entries))
+	if byTenantSet {
+		fmt.Fprintf(w, "Tenant: %q  (%d entries across %d task(s))\n", ledgerByTenantID, len(entries), countTaskIDs(entries))
+	} else {
+		fmt.Fprintf(w, "Task: %s  (%d entries)\n", taskID, len(entries))
+	}
 	fmt.Fprintln(w, strings.Repeat("-", 80))
+	// Column layout: when --show-tenant is set, a 24-char tenant column is
+	// injected after `result`; otherwise the layout is bit-identical to the
+	// pre-issue-#5 form so existing operator muscle memory still works.
 	for _, e := range entries {
 		ts := e.Ts.Format(time.RFC3339)
-		fmt.Fprintf(w, "  %s  %-12s %-24s %s\n", ts, e.Phase, e.Action, e.Result)
+		if ledgerShowTenant {
+			tenant := e.TenantID
+			if tenant == "" {
+				tenant = "-"
+			}
+			fmt.Fprintf(w, "  %s  %-12s %-24s %-8s %s\n", ts, e.Phase, e.Action, e.Result, tenant)
+		} else {
+			fmt.Fprintf(w, "  %s  %-12s %-24s %s\n", ts, e.Phase, e.Action, e.Result)
+		}
 	}
 	return nil
+}
+
+// countTaskIDs returns the number of distinct TaskIDs in entries. Used only
+// for the --by-tenant header line.
+func countTaskIDs(entries []iledger.Entry) int {
+	seen := map[string]struct{}{}
+	for _, e := range entries {
+		seen[e.TaskID] = struct{}{}
+	}
+	return len(seen)
 }
 
 func runLedgerVerify(cmd *cobra.Command, _ []string) error {
@@ -167,11 +229,15 @@ func ledgerSkill() Skill {
 			{Name: "show <task-id>", Description: "Show entries for a task."},
 			{Name: "verify", Description: "Verify ed25519 signatures across all ledger tasks."},
 			{Name: "--ledger-dir PATH", Description: "Override ~/.hermes/ledger path."},
-			{Name: "--json", Description: "Emit JSON output."},
+			{Name: "--json", Description: "Emit JSON output (always includes tenant_id when set)."},
+			{Name: "--show-tenant", Description: "Include the tenant_id column in `ledger show` table output."},
+			{Name: "--by-tenant ID", Description: "On `ledger show`: filter to entries whose tenant_id matches (cross-task)."},
 		},
 		Examples: []SkillExample{
 			{Description: "List tasks", Command: "fleetctl ledger list"},
 			{Description: "Show task entries", Command: "fleetctl ledger show task-abc123"},
+			{Description: "Show with tenant column", Command: "fleetctl ledger show task-abc123 --show-tenant"},
+			{Description: "Cross-task tenant view", Command: "fleetctl ledger show --by-tenant tenant-acme"},
 			{Description: "Verify all signatures", Command: "fleetctl ledger verify"},
 		},
 	}

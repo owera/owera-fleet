@@ -145,10 +145,19 @@ func formatLabels(labels map[string]string) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-// collectHeartbeatAge reads ~/.hermes/heartbeats/*.json on the gateway to
-// determine the age of each node's most recent heartbeat.
-func (c *Collector) collectHeartbeatAge() ([]Metric, error) {
-	heartbeatDir := filepath.Join(filepath.Dir(c.LogDir), "heartbeats")
+// HeartbeatAges reads ~/.hermes/heartbeats/*.json relative to logDir's parent
+// and returns a map of node name → age of the node's most recent heartbeat.
+//
+// The function is the single source of truth for `fleet_heartbeat_age_seconds`:
+// both the Prometheus scrape path ([Collector.Collect]) and the JSON-RPC
+// `fleet.HealthSnapshot` handler call it so the two surfaces never disagree.
+// now is injected for deterministic tests; production callers should pass
+// time.Now().
+//
+// A missing heartbeat directory returns (nil, nil) so callers can treat
+// "no heartbeats yet" the same as "no workers reported".
+func HeartbeatAges(logDir string, now time.Time) (map[string]time.Duration, error) {
+	heartbeatDir := filepath.Join(filepath.Dir(logDir), "heartbeats")
 	entries, err := os.ReadDir(heartbeatDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -156,21 +165,47 @@ func (c *Collector) collectHeartbeatAge() ([]Metric, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := c.clock()
-	var out []Metric
+	out := make(map[string]time.Duration, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		info, _ := e.Info()
-		age := now.Sub(info.ModTime()).Seconds()
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
 		node := strings.TrimSuffix(e.Name(), ".json")
+		out[node] = now.Sub(info.ModTime())
+	}
+	return out, nil
+}
+
+// collectHeartbeatAge reads ~/.hermes/heartbeats/*.json on the gateway to
+// determine the age of each node's most recent heartbeat. Delegates to
+// [HeartbeatAges] so the RPC surface and Prometheus scrape stay consistent.
+func (c *Collector) collectHeartbeatAge() ([]Metric, error) {
+	ages, err := HeartbeatAges(c.LogDir, c.clock())
+	if err != nil {
+		return nil, err
+	}
+	if len(ages) == 0 {
+		return nil, nil
+	}
+	// Sort node names for deterministic ordering (existing tests rely on
+	// the readdir order being stable; map iteration is not, so sort).
+	names := make([]string, 0, len(ages))
+	for n := range ages {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]Metric, 0, len(names))
+	for _, n := range names {
 		out = append(out, Metric{
 			Name:   "fleet_heartbeat_age_seconds",
 			Help:   "Seconds since the most recent heartbeat from each worker.",
 			Type:   "gauge",
-			Labels: map[string]string{"node": node},
-			Value:  age,
+			Labels: map[string]string{"node": n},
+			Value:  ages[n].Seconds(),
 		})
 	}
 	return out, nil
