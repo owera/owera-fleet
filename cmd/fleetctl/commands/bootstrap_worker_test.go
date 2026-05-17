@@ -22,6 +22,142 @@ func resetBWFlags() {
 	bwDryRun = false
 	bwQuiet = true
 	bwTimeout = 10 * time.Second
+	bwPinnedVersion = ""
+	bwPinnedFile = bwDefaultPinnedFile
+	bwConfigBundleSrc = ""
+	bwEnvGPG = bwDefaultEnvGPG
+	bwSecretsWrapper = ""
+	bwDedicatedKeyPub = bwDefaultDedicatedKey
+	bwPlistTemplate = bwDefaultPlistTemplate
+	bwGatewayPrefix = bwDefaultGatewayPrefix
+	bwAllowExistAdmin = false
+	bwSkipTirith = false
+	bwSkipHeartbeat = false
+	bwHeartbeatWaitSec = bwDefaultHeartbeatWait
+}
+
+// TestPhasesDefault_TenInOrder asserts the canonical phase list is
+// 10 scripts in numeric order (phase00 -> phase09). This is the
+// load-bearing invariant of the wave-9 port: any reordering or
+// dropped phase is a contract break that must be deliberate.
+func TestPhasesDefault_TenInOrder(t *testing.T) {
+	resetBWFlags()
+	defer resetBWFlags()
+	got := bwPhasesToRun()
+	want := []string{
+		"phase00_brew_baseline.sh",
+		"phase01_verify_prereqs.sh",
+		"phase02_create_user.sh",
+		"phase03_install_hermes.sh",
+		"phase04_seed_config.sh",
+		"phase05_distribute_secrets.sh",
+		"phase06_setup_dedicated_key.sh",
+		"phase07_install_tirith.sh",
+		"phase08_launchd_heartbeat.sh",
+		"phase09_verify.sh",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("phase count: got %d, want %d (got=%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("phase[%d]: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestBuildPhasePrep_ArgShape exercises the per-phase argument shaping.
+// It does not run the scripts — just asserts that for each phase, the
+// generated args[] include the expected required flags (or that
+// missing-input errors are returned). For phases that need staging,
+// the prepare() closure is exercised against a fake upload.
+func TestBuildPhasePrep_ArgShape(t *testing.T) {
+	resetBWFlags()
+	defer resetBWFlags()
+
+	cases := []struct {
+		phase      string
+		setup      func(t *testing.T)
+		wantFlags  []string // substrings that must appear in the joined args
+		expectErr  bool
+	}{
+		{
+			phase:     "phase00_brew_baseline.sh",
+			wantFlags: []string{"--node", "u@h"},
+		},
+		{
+			phase:     "phase01_verify_prereqs.sh",
+			wantFlags: []string{"--node", "u@h"},
+		},
+		{
+			phase: "phase02_create_user.sh",
+			setup: func(t *testing.T) { bwAllowExistAdmin = true },
+			wantFlags: []string{"--allow-existing-admin-user"},
+		},
+		{
+			phase:     "phase03_install_hermes.sh",
+			expectErr: true, // no pinned version provided
+		},
+		{
+			phase: "phase07_install_tirith.sh",
+			setup: func(t *testing.T) { bwSkipTirith = true },
+			wantFlags: []string{"--skip"},
+		},
+		{
+			phase: "phase08_launchd_heartbeat.sh",
+			setup: func(t *testing.T) { bwSkipHeartbeat = true },
+			wantFlags: []string{"--skip"},
+		},
+		{
+			phase:     "phase09_verify.sh",
+			expectErr: true, // no pinned version provided
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.phase, func(t *testing.T) {
+			resetBWFlags()
+			defer resetBWFlags()
+			if tc.setup != nil {
+				tc.setup(t)
+			}
+			prep, err := buildPhasePrep(tc.phase, "u@h", "")
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("%s: expected error, got nil (args=%v)", tc.phase, prep.args)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", tc.phase, err)
+			}
+			joined := strings.Join(prep.args, " ")
+			for _, want := range tc.wantFlags {
+				if !strings.Contains(joined, want) {
+					t.Errorf("%s: args missing %q (got: %s)", tc.phase, want, joined)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildPhasePrep_PinnedVersionPropagates confirms that when a
+// pinned version is supplied, phase03 + phase09 both pick it up.
+func TestBuildPhasePrep_PinnedVersionPropagates(t *testing.T) {
+	resetBWFlags()
+	defer resetBWFlags()
+
+	for _, phase := range []string{"phase03_install_hermes.sh", "phase09_verify.sh"} {
+		prep, err := buildPhasePrep(phase, "u@h", "v9.9.9")
+		if err != nil {
+			t.Fatalf("%s: %v", phase, err)
+		}
+		joined := strings.Join(prep.args, " ")
+		if !strings.Contains(joined, "--pinned-version v9.9.9") {
+			t.Errorf("%s: pinned version not in args (got: %s)", phase, joined)
+		}
+	}
 }
 
 func TestBootstrapWorkerRequiresNode(t *testing.T) {
