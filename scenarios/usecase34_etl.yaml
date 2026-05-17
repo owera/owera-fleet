@@ -1,45 +1,71 @@
 name: usecase34_etl
 tier: 3
 description: |
-  v2 §3.4 ETL pipeline use case — the markers primitive has no CLI surface
-  yet, so this scenario synthesizes the lifecycle via a shell harness:
-  produce a known input, hash it, confirm the metrics surface is alive,
-  and verify the ledger remained signature-valid across the run.
+  v2 §3.4 ETL pipeline use case — exercises the markers CLI as the
+  idempotent step-skip primitive. Step 1 records a content-hashed marker
+  for `load_users`; step 4 verifies that marker is fresh, then asserts the
+  list surface returns the same step in JSON form. Re-running the whole
+  scenario is a no-op (the marker remains fresh because the input hasn't
+  changed), which is the ETL-resume contract the markers package gives us.
 vars:
-  ETL_INPUT: /tmp/owera-fleet-usecase34-etl-input.txt
+  ETL_INPUT_PATH: /tmp/owera-fleet-usecase34-etl-input.txt
+  ETL_PIPELINE: usecase34
+  ETL_STEP: load_users
+  ETL_MARKERS_DIR: /tmp/owera-fleet-usecase34-markers
 
 steps:
-  # 1. Create a temp input file with deterministic content.
-  - name: etl-prepare-input
+  # 1. Prepare a deterministic input file, then record an idempotency
+  # marker for the load_users step via the markers CLI. On a re-run this
+  # rewrites the marker with the same hash (idempotent).
+  - name: etl-prepare-and-mark
     run: |
-      printf 'owera-fleet usecase34 etl payload\n' > ${ETL_INPUT}
-      test -s ${ETL_INPUT}
+      mkdir -p ${ETL_MARKERS_DIR}
+      printf 'owera-fleet usecase34 etl payload\n' > ${ETL_INPUT_PATH}
+      test -s ${ETL_INPUT_PATH}
+      bin/fleetctl markers hash \
+        --markers-dir ${ETL_MARKERS_DIR} \
+        --pipeline ${ETL_PIPELINE} \
+        --step ${ETL_STEP} \
+        --input ${ETL_INPUT_PATH}
     expect:
       exit: 0
+      stdout_contains: "sha256:"
 
-  # 2. Hash the input — proves the harness can shell out for awk/shasum
-  # under the runner's `sh -c` wrapper.
-  - name: etl-hash-input
-    run: sh -c "shasum -a 256 ${ETL_INPUT} | awk '{print \$1}'"
-    expect:
-      exit: 0
-      stdout_contains: "a"
-
-  # 3. Metrics surface is alive and emits the documented counter family.
+  # 2. Metrics surface is alive and emits the documented counter family.
   - name: metrics-scrape-counter-family
     run: bin/fleetctl metrics --scrape
     expect:
       exit: 0
       stdout_contains: "# TYPE fleet_actions_total counter"
 
-  # 4. Ledger integrity check across the run — no mutation, must stay clean.
+  # 3. Ledger integrity check across the run — no mutation, must stay clean.
   - name: ledger-verify-post-run
     run: bin/fleetctl ledger verify
     expect:
       exit: 0
 
-  # 5. Cleanup the synthetic input file.
+  # 4. Verify the marker is fresh against the (unchanged) input, then
+  # list it as JSON and assert load_users is present. This is the
+  # resume-without-rework half of the contract.
+  - name: etl-verify-and-list
+    run: |
+      bin/fleetctl markers verify \
+        --markers-dir ${ETL_MARKERS_DIR} \
+        --pipeline ${ETL_PIPELINE} \
+        --step ${ETL_STEP} \
+        --input ${ETL_INPUT_PATH}
+      bin/fleetctl markers list \
+        --markers-dir ${ETL_MARKERS_DIR} \
+        --pipeline ${ETL_PIPELINE} \
+        --format json
+    expect:
+      exit: 0
+      stdout_contains: "load_users"
+
+  # 5. Cleanup the synthetic input + marker store so the next run starts
+  # fresh. The cleanup is the only mutating step beyond marker writes,
+  # which keeps the rerun-as-no-op contract honest.
   - name: etl-cleanup
-    run: rm -f ${ETL_INPUT}
+    run: rm -rf ${ETL_INPUT_PATH} ${ETL_MARKERS_DIR}
     expect:
       exit: 0
