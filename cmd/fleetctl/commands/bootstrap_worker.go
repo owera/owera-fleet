@@ -432,12 +432,9 @@ func buildPhasePrep(phase, nodeLabel, pinnedVersion string) (phasePrep, error) {
 }
 
 func buildPhase04Prep(common []string) (phasePrep, error) {
-	if bwDryRun {
-		// Dry-run still requires a bundle arg, but we can point at a
-		// dummy path the script will probe-error on — except its
-		// dry-run branch reports skipped for the probe. Easier: stage a
-		// tiny placeholder tarball.
-	}
+	// Dry-run still stages a real bundle so the script's probe path is
+	// exercised end-to-end; phase04_seed_config's --dry-run branch
+	// reports `skipped` without applying.
 	srcDir, err := expandHomePath(bwConfigBundleOrDefault())
 	if err != nil {
 		return phasePrep{}, fmt.Errorf("config-src: %w", err)
