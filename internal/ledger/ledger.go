@@ -253,6 +253,28 @@ func (l *Ledger) ReadByTenant(tenantID string) ([]Entry, error) {
 	return out, nil
 }
 
+// ReadSince returns entries for taskID whose Ts is strictly after `after`.
+// Used by the fleet.LedgerTail RPC to drive cursor-based streaming from
+// the customer-plane dispatcher: cloud submits a job, then polls with
+// the latest Ts it has seen and gets only the new tail. Pass the zero
+// Time to read everything.
+func (l *Ledger) ReadSince(taskID string, after time.Time) ([]Entry, error) {
+	all, err := l.Read(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if after.IsZero() {
+		return all, nil
+	}
+	out := all[:0]
+	for _, e := range all {
+		if e.Ts.After(after) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 // Tasks returns the task IDs that have ledger files, sorted alphabetically.
 func (l *Ledger) Tasks() ([]string, error) {
 	entries, err := os.ReadDir(l.dir)
