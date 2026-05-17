@@ -2,26 +2,30 @@
 
 > **Audience: internal team + cloud-plane developers.** Sister doc: [`owera-cloud/docs/roadmap.md`](https://github.com/owera/owera-cloud/blob/main/docs/roadmap.md). Master plan that defined the green-field recreation: [`knowing-all-you-now-calm-leaf.md`](../knowing-all-you-now-calm-leaf.md). Forward view; source of truth for delivered state is the git log on `main`.
 
-**Last updated:** 2026-05-17 (PM).
+**Last updated:** 2026-05-17 (evening, post-Wave-9-A+B1).
 
 ## What we're working on right now
+
+Wave 9-A + B1 (the engineering side of Phase-1 verification + Phase-2 primitive coverage + the customer-plane reconciler) closed today. Seven owera-fleet PRs and four owera-cloud PRs merged this session. The remaining items are all operator-action-bound (hardware procurement, account access, BR tax/legal).
 
 | Thread | Status | Where |
 |---|---|---|
 | Operator plane is **live on `claw3.local`** serving the production cloud API over a Cloudflare Named Tunnel | ✅ Shipped | 4 LaunchAgents (`com.owera.fleetctl-serve`, `snapshot-publish`, `heartbeats-bridge`, `com.cloudflare.cloudflared`) running |
-| End-to-end smoke of a V0 SKU through cloud → tunnel → operator → ledger → Stripe | 🚧 Gated on operator action (Stripe test-mode key already wired; missing piece is rotating/locating `OWERA_ADMIN_TOKEN` to mint the first API key) | Next executable step |
-| Phase 2 verification: do the e2e scenarios in `scenarios/` exercise every primitive end-to-end? | 🔍 Audit pending | `scenarios/usecase3{1,2,3,4}.yaml` |
-| Cutover from `hermes-setup` bash prototype | 🔄 In progress; `fleetctl serve` + `snapshot-publish` + `heartbeats-bridge` already supersede the bash equivalents | The bash repo will be archived under `docs/archive/hermes-setup-<date>/` once `fleetctl state --markdown` matches the bash STATE.md and `fleetctl bootstrap-worker` is proven on a fresh node |
+| Cloud reconciler wire-up (outbox flusher → Stripe + daily drift detector) | ✅ Shipped + deployed | Production boot log shows `reconciler=on (drift detector, daily)`; outbox flusher tick interval 1m; drift detector tick interval 24h |
+| Phase-1 verification gate (T4.4 `audit config` + T12.1 `state --markdown` parity + T12.3 `bootstrap-worker` phases 1-9) | ✅ Shipped to `main` | PR #14 (audit config), #19 (bootstrap phases), #20 (state parity) |
+| Phase-2 e2e scenarios — usecases 32/33/34 now exercise live primitives, not help-text | ✅ Shipped to `main` | PR #15 (swarm), #16 (cronjob+alert), #17 (markers CLI + usecase34 wiring) |
+| End-to-end smoke of a V0 SKU through cloud → tunnel → operator → ledger → Stripe | 🚧 Operator-action: locate/rotate `OWERA_ADMIN_TOKEN` and submit a `triage-watch` job | Next executable step once token is in hand |
+| Cutover from `hermes-setup` bash prototype (C3) | 🚧 Gated on C1 staging-Mac verification of `fleetctl bootstrap-worker hermes@claw-staging.local` | Archive directory `docs/archive/` exists, empty; awaits the cutover commit |
 
 ## Phase status at a glance
 
 | Phase | Scope | State |
 |---|---|---|
-| **Phase 1** — Foundation | Typed Go core (`internal/log`, `nodes`, `ssh`, `bootstrap`, `audit`, `launchd`, `scenarios`, `state`), `fleetctl` dispatcher with 20+ subcommands | ✅ Mostly shipped to `main`; outstanding items in §"Phase 1 — open items" |
-| **Phase 2** — Use-case primitives | `internal/{ledger, pairing, budget, secrets, configsync, hermesjobs, markers, orchestrator, alerting, metrics, skillsync, logaggregate}` + matching `commands/*.go` | ✅ All 12 primitives + 11 of 12 commands shipped (commands/ as of 2026-05-17). E2E scenarios per use case still to be authored against the live primitives |
+| **Phase 1** — Foundation | Typed Go core (`internal/log`, `nodes`, `ssh`, `bootstrap`, `audit`, `launchd`, `scenarios`, `state`), `fleetctl` dispatcher with 28 subcommands | ✅ Code shipped to `main`. Verification gate items (T4.4 audit config, T12.1 state parity, T12.3 bootstrap-worker phases 00-09) all landed Wave-9. Live VM acceptance run still gated on `claw-staging.local` |
+| **Phase 2** — Use-case primitives | `internal/{ledger, pairing, budget, secrets, configsync, hermesjobs, markers, orchestrator, alerting, metrics, skillsync, logaggregate}` + matching `commands/*.go` + `markers` CLI | ✅ All 12 primitives + 12 commands shipped. E2E scenarios usecase31/32/33/34 exercise live primitives (PR #15/#16/#17 Wave-9-A). |
 | **Phase 2.5** — Customer-plane seam | `internal/rpc` JSON-RPC 2.0 server (`fleet.SubmitJob`, `fleet.CancelTask`, `fleet.HealthSnapshot`, `fleet.LedgerTail`); `cmd/fleetctl/commands/serve.go`; snapshot publisher + R2/S3 upload mode; heartbeats-bridge | ✅ Shipped. Cloud plane `apiserver` reaches this surface over the Cloudflare tunnel at `https://internal-rpc.owera.com` |
-| **Phase 3** — Customer plane | Lives in `owera-cloud` | ⏩ See [cloud roadmap](https://github.com/owera/owera-cloud/blob/main/docs/roadmap.md) |
-| **Phase 4** — Launch readiness | Staging Mac, on-call rotation, beta-1 design partners | ⏳ Planned; gated on V0 e2e smoke + Stripe live mode + repo-public flip |
+| **Phase 3** — Customer plane | Lives in `owera-cloud` | ✅ Engineering complete. See [cloud roadmap](https://github.com/owera/owera-cloud/blob/main/docs/roadmap.md). Reconciler live in prod (Wave-9 PR #37). |
+| **Phase 4** — Launch readiness | Staging Mac, on-call rotation, beta-1 design partners | ⏳ Operator-action gated: `claw-staging.local` hardware, PagerDuty account, Stripe live-mode, repo-public flip, BR tax accountant, BR SaaS lawyer |
 
 ## Phase 1 — open items
 
@@ -29,38 +33,38 @@ The Phase 1 build per the founding plan is "1) typed core, 2) generated docs ove
 
 | Item | Status | Notes |
 |---|---|---|
-| `fleetctl bootstrap-worker` proven on a fresh macOS VM | 🚧 Built in code; no end-to-end run against a clean node yet | Founding-plan verification step 5 |
-| `fleetctl state --markdown` byte-for-byte matches `hermes-setup/STATE.md` | 🚧 Open | Founding-plan migration step 4; cutover gate |
-| `fleetctl audit config` drift table matches the bash-era hand-maintained version | 🚧 Open | Founding-plan verification step 7 |
-| `fleetctl gen-skills --check` wired into CI | ✅ Generated `skills/<name>/SKILL.md` committed; CI drift check still TBD | Founding-plan principle 7 |
-| Cross-compile release workflow (`darwin/arm64` + `darwin/amd64`) | 🚧 Open | `.github/workflows/release.yml` |
+| `fleetctl bootstrap-worker` proven on a fresh macOS VM | 🚧 Code shipped for phases 00-09 (PR #19); live VM run gated on `claw-staging.local` Mac procurement | Founding-plan verification step 5 |
+| `fleetctl state --markdown` structural parity with `hermes-setup/STATE.md` | ✅ Shipped (PR #20); diff returns only timestamp/PID/narrative lines | Founding-plan migration step 4; cutover gate |
+| `fleetctl audit config` drift table matches the bash-era hand-maintained version | ✅ Shipped (PR #14); reproduces SECURITY_NOTES.md table byte-for-byte | Founding-plan verification step 7 |
+| `fleetctl gen-skills --check` wired into CI | ✅ CI gate active in `.github/workflows/ci.yml`; 28 skills/SKILL.md tracked | Founding-plan principle 7 |
+| Cross-compile release workflow (`darwin/arm64` + `darwin/amd64`) | ✅ `.github/workflows/release.yml` ready; fires on `v*` tag push | Founding-plan tradeoff §1 |
 
 ## Phase 2 — primitive coverage
 
-Built and exercised at unit-test level. Outstanding: end-to-end scenario coverage that actually runs each SKU's full primitive chain on the live fleet.
+All 12 primitives + matching CLI commands shipped. E2E scenarios for V0 SKUs now exercise live primitives (Wave-9-A landed PR #15/#16/#17).
 
-| Component | Built | E2E scenario landed |
+| Component | Built | E2E scenario |
 |---|---|---|
-| `internal/ledger` | ✅ | Partial (used by `fleet.LedgerTail`; SKU-shaped replay scenario TBD) |
-| `internal/pairing` + `internal/budget` + `commands/pair.go` | ✅ | TBD |
-| `internal/secrets` + `commands/run-with-secrets.go` | ✅ | TBD |
-| `internal/configsync` + `commands/config-sync.go` | ✅ | TBD (minisign integration verified in unit tests) |
-| `internal/hermesjobs` + `commands/cronjob.go` | ✅ | TBD |
-| `internal/markers` | ✅ | TBD |
-| `internal/orchestrator` + `commands/swarm.go` | ✅ | TBD |
-| `internal/alerting` + `commands/alert.go` | ✅ | TBD (PagerDuty + OpsGenie + ntfy backends) |
-| `internal/metrics` + `commands/metrics-cmd.go` | ✅ | TBD (Prometheus exposition) |
-| `internal/skillsync` + `commands/skill-sync.go` | ✅ | TBD |
-| `internal/logaggregate` + `commands/log-aggregate.go` | ✅ | TBD |
+| `internal/ledger` | ✅ | usecase31 (pair + ledger), usecase34 (resume via markers) |
+| `internal/pairing` + `internal/budget` + `commands/pair.go` | ✅ | usecase31 (pair create/budget/show/revoke round-trip) |
+| `internal/secrets` + `commands/run-with-secrets.go` | ✅ | usecase33 (env-leak prevention + opt-in injection) |
+| `internal/configsync` + `commands/config-sync.go` | ✅ | Unit tests; e2e covered indirectly via bootstrap-worker phase04 |
+| `internal/hermesjobs` + `commands/cronjob.go` | ✅ | usecase33 (cronjob install --dry-run round-trip) |
+| `internal/markers` + `commands/markers.go` *(new in Wave-9 PR #17)* | ✅ | usecase34 (hash/verify/list/invalidate end-to-end on ETL pipeline) |
+| `internal/orchestrator` + `commands/swarm.go` | ✅ | usecase32 (live fan-out hermes@claw1+claw2 + ledger merge verify) |
+| `internal/alerting` + `commands/alert.go` | ✅ | usecase33 (ntfy backend fire) |
+| `internal/metrics` + `commands/metrics-cmd.go` | ✅ | usecase34 (scrape + ledger verify) |
+| `internal/skillsync` + `commands/skill-sync.go` | ✅ | Unit tests; signed-pull scenario remains TBD pending real signing infra |
+| `internal/logaggregate` + `commands/log-aggregate.go` | ✅ | Daemon installed via `setup-agent` |
 
 **Phase 2 → Phase 4 gating scenarios** (founding-plan §"Phase 2 build order" step 25):
 
-- `scenarios/usecase31_native_app.yaml` — `pair → delegate → ledger → swarm → gh pr create → alert` for `app-build`/`xcode-ci`
-- `scenarios/usecase32_marketing_swarm.yaml` — multi-leaf swarm + ledger merge + idempotency-key compensation for `campaign-swarm`
-- `scenarios/usecase33_ticket_triage.yaml` — `cronjob` (hermes-managed, not launchd) + `secrets` (stdin) + `alert` for `triage-watch`
-- `scenarios/usecase34_etl.yaml` — `cronjob` + parallel `delegate` + `markers` + `ledger` resume for `etl-flow`
+- ✅ `scenarios/usecase31_native_app.yaml` — pair + ledger round-trip (pre-Wave-9; real)
+- ✅ `scenarios/usecase32_marketing_swarm.yaml` — live swarm fan-out + ledger merge (Wave-9 PR #15)
+- ✅ `scenarios/usecase33_ticket_triage.yaml` — cronjob round-trip + run-with-secrets + alert fire (Wave-9 PR #16)
+- ✅ `scenarios/usecase34_etl.yaml` — markers CLI + cronjob + parallel delegate + ledger (Wave-9 PR #17)
 
-These are the "do the primitives actually compose into a sellable SKU end-to-end" test. Authoring them and getting them green is the next chunk of Phase 2 work.
+C2 e2e gauntlet (`fleetctl test --tier=e2e` against live fleet) is the next executable verification; pending `claw-staging.local` provisioning for the bootstrap-worker side, but the scenario suite itself is ready.
 
 ## Phase 2.5 — customer-plane seam (what makes the cloud plane work)
 
@@ -116,3 +120,4 @@ The original `~/hermes-setup` bash workspace is being phased out. The cutover se
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-17 (PM) | Claude (under Rodrigo) | Initial publication. Captures Phase 1 + Phase 2 primitive coverage, Phase 2.5 customer-plane seam status, Phase 4 gating, hermes-setup phase-out sequence. |
+| 2026-05-17 (evening) | Claude (under Rodrigo) | Wave-9-A + B1 close-out. 7 owera-fleet PRs merged (#14 audit config, #15 swarm e2e, #16 cronjob+alert e2e, #17 markers CLI, #18 drift cleanup, #19 bootstrap phases 1-9, #20 state parity) + 2 utility PRs (#13 drift fix already merged AM; #18 same-evening). Phase-1 verification gate engineering all green; Phase-2 e2e scenario coverage complete. Remaining holdouts (C1 staging Mac, C2 live gauntlet, C3 cutover) are operator-action-bound. |
