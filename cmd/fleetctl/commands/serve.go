@@ -25,6 +25,7 @@ import (
 	osh "github.com/owera/owera-fleet/internal/ssh"
 	"github.com/owera/owera-fleet/internal/log"
 	"github.com/owera/owera-fleet/internal/rpc"
+	"github.com/owera/owera-fleet/internal/skus"
 )
 
 var (
@@ -95,6 +96,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Ledger:   led,
 		Delegate: makeServeDelegateFunc(),
 	})
+
+	// Wire V0 SKU routers (triage-watch@v1, campaign-swarm@v1). WS-A
+	// installs no-op stubs that emit a single BillEvent + terminal
+	// `complete` entry so the cloud → tunnel → operator → Stripe
+	// round-trip can run end-to-end. WS-B/C replace these stubs with
+	// the real cronjob / orchestrator implementations.
+	skuDeps := skus.SKURunnerDeps{
+		Ledger:  led,
+		Now:     func() time.Time { return time.Now().UTC() },
+		Billing: &skus.LedgerBillingEmitter{Ledger: led},
+	}
+	submit.RegisterSKU("triage-watch@v1", skus.NewTriageWatchRouter(skuDeps))
+	submit.RegisterSKU("campaign-swarm@v1", skus.NewCampaignSwarmRouter(skuDeps))
+
 	srv.Register("fleet.SubmitJob", submit.Handle)
 
 	// fleet.CancelTask — looks up the task in runregistry and invokes
