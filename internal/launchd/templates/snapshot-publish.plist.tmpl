@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{.Label}}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{.ScriptPath}}</string>
+        <string>snapshot-publish</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{.HomeDir}}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardErrorPath</key>
+    <string>{{.HomeDir}}/.hermes/logs/snapshot-publish.launchd.err</string>
+    <key>StandardOutPath</key>
+    <string>{{.HomeDir}}/.hermes/logs/snapshot-publish.launchd.out</string>
+</dict>
+</plist>

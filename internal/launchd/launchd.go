@@ -87,12 +87,13 @@ const templatesDir = "templates"
 // suffix). Use these constants when calling RenderTemplate so a typo
 // becomes a compile error rather than a runtime "template not found".
 const (
-	TemplateHeartbeat    = "heartbeat"
-	TemplateBackup       = "backup"
-	TemplateBackupWorker = "backup-worker"
-	TemplateWatchdog     = "watchdog"
-	TemplateLogrotate    = "logrotate"
-	TemplateLogAggregate = "logaggregate"
+	TemplateHeartbeat       = "heartbeat"
+	TemplateBackup          = "backup"
+	TemplateBackupWorker    = "backup-worker"
+	TemplateWatchdog        = "watchdog"
+	TemplateLogrotate       = "logrotate"
+	TemplateLogAggregate    = "logaggregate"
+	TemplateSnapshotPublish = "snapshot-publish"
 )
 
 // AllTemplates returns the canonical list of bundled template names in
@@ -107,6 +108,7 @@ func AllTemplates() []string {
 		TemplateWatchdog,
 		TemplateLogrotate,
 		TemplateLogAggregate,
+		TemplateSnapshotPublish,
 	}
 }
 
