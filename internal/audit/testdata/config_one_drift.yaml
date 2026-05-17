@@ -1,0 +1,11 @@
+# One-drift fixture: only sessions.retention_days is out of baseline.
+security:
+  website_blocklist:
+    enabled: true
+checkpoints:
+  enabled: true
+sessions:
+  retention_days: 90
+gateway:
+  allow_all_users: false
+  dm_pairing: true

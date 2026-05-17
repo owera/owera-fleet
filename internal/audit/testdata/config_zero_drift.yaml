@@ -1,0 +1,12 @@
+# Zero-drift fixture: every audited setting matches the documented Hermes
+# baseline, so DetectDrift returns no rows.
+security:
+  website_blocklist:
+    enabled: true
+checkpoints:
+  enabled: true
+sessions:
+  retention_days: 30
+gateway:
+  allow_all_users: false
+  dm_pairing: true
