@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -455,7 +454,3 @@ func snapshotPublishSkill() Skill {
 		},
 	}
 }
-
-// errIntervalTooShort is kept package-level so tests don't need to
-// duplicate the message string.
-var errIntervalTooShort = errors.New("snapshot-publish: interval < 1s")
