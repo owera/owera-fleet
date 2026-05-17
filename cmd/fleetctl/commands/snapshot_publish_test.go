@@ -1,11 +1,18 @@
 package commands
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestWriteJSONAtomic_FreshFile verifies that writeJSONAtomic produces
@@ -105,5 +112,136 @@ func TestWriteJSONAtomic_RejectsUnmarshallable(t *testing.T) {
 	// No output file either.
 	if _, err := os.Stat(out); !os.IsNotExist(err) {
 		t.Errorf("out file created despite marshal error: %v", err)
+	}
+}
+
+// --- HTTP PUT mode tests ---
+
+func TestResolveHTTPPutConfig_FlagsOverEnv(t *testing.T) {
+	t.Setenv(envSnapshotHTTPPutURL, "https://from-env.example/x")
+	t.Setenv(envSnapshotHTTPAuth, "Bearer envtoken")
+
+	cfg, err := resolveHTTPPutConfig("https://from-flag.example/x", []string{"X-Flag=1"}, 5*time.Second)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if cfg.URL != "https://from-flag.example/x" {
+		t.Errorf("URL: got %q, want flag value", cfg.URL)
+	}
+	if cfg.Headers["X-Flag"] != "1" {
+		t.Errorf("Headers: %+v", cfg.Headers)
+	}
+	if _, hasAuth := cfg.Headers["Authorization"]; hasAuth {
+		t.Errorf("env auth leaked through despite flag presence: %+v", cfg.Headers)
+	}
+}
+
+func TestResolveHTTPPutConfig_EnvFallback(t *testing.T) {
+	t.Setenv(envSnapshotHTTPPutURL, "https://from-env.example/x")
+	t.Setenv(envSnapshotHTTPAuth, "Bearer envtoken")
+	cfg, err := resolveHTTPPutConfig("", nil, 5*time.Second)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if cfg.URL != "https://from-env.example/x" {
+		t.Errorf("URL fallback: got %q", cfg.URL)
+	}
+	if cfg.Headers["Authorization"] != "Bearer envtoken" {
+		t.Errorf("Authorization fallback: %+v", cfg.Headers)
+	}
+}
+
+func TestResolveHTTPPutConfig_DisabledWhenNoURL(t *testing.T) {
+	t.Setenv(envSnapshotHTTPPutURL, "")
+	cfg, err := resolveHTTPPutConfig("", nil, 5*time.Second)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if cfg.Enabled() {
+		t.Errorf("expected disabled when no URL configured; got %+v", cfg)
+	}
+}
+
+func TestResolveHTTPPutConfig_BadHeaderFormat(t *testing.T) {
+	if _, err := resolveHTTPPutConfig("https://x/y", []string{"NoEqualsHere"}, 5*time.Second); err == nil {
+		t.Error("expected error on malformed header")
+	}
+}
+
+// captureServer is a tiny test HTTP server that captures the most-
+// recent PUT body + headers for assertion.
+type captureServer struct {
+	mu       sync.Mutex
+	bodies   [][]byte
+	headers  []http.Header
+	respond  func() (int, time.Duration)
+}
+
+func newCaptureServer(t *testing.T, respond func() (int, time.Duration)) (*httptest.Server, *captureServer) {
+	t.Helper()
+	c := &captureServer{respond: respond}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		c.mu.Lock()
+		c.bodies = append(c.bodies, body)
+		c.headers = append(c.headers, r.Header.Clone())
+		c.mu.Unlock()
+		status, sleep := http.StatusOK, time.Duration(0)
+		if c.respond != nil {
+			status, sleep = c.respond()
+		}
+		if sleep > 0 {
+			time.Sleep(sleep)
+		}
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, c
+}
+
+func TestPutJSON_HappyPath(t *testing.T) {
+	srv, cap := newCaptureServer(t, nil)
+	body := []byte(`{"hello":"world"}`)
+	if err := putJSON(context.Background(), srv.URL+"/x", body,
+		map[string]string{"Authorization": "Bearer t"}, 2*time.Second); err != nil {
+		t.Fatalf("putJSON: %v", err)
+	}
+	if len(cap.bodies) != 1 || !bytes.Equal(cap.bodies[0], body) {
+		t.Errorf("body: got %v, want %s", cap.bodies, body)
+	}
+	if got := cap.headers[0].Get("Authorization"); got != "Bearer t" {
+		t.Errorf("Authorization: got %q", got)
+	}
+	if got := cap.headers[0].Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type default: got %q", got)
+	}
+}
+
+func TestPutJSON_Non2xxIsError(t *testing.T) {
+	srv, _ := newCaptureServer(t, func() (int, time.Duration) { return http.StatusForbidden, 0 })
+	if err := putJSON(context.Background(), srv.URL+"/x", []byte("{}"), nil, 2*time.Second); err == nil {
+		t.Fatal("expected error on 403")
+	}
+}
+
+func TestPutJSON_Timeout(t *testing.T) {
+	srv, _ := newCaptureServer(t, func() (int, time.Duration) {
+		return http.StatusOK, 200 * time.Millisecond
+	})
+	err := putJSON(context.Background(), srv.URL+"/x", []byte("{}"), nil, 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
+func TestPutJSON_CustomContentTypeRespected(t *testing.T) {
+	srv, cap := newCaptureServer(t, nil)
+	err := putJSON(context.Background(), srv.URL+"/x", []byte("[]"),
+		map[string]string{"Content-Type": "application/cbor"}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("putJSON: %v", err)
+	}
+	if got := cap.headers[0].Get("Content-Type"); got != "application/cbor" {
+		t.Errorf("Content-Type override: got %q", got)
 	}
 }
