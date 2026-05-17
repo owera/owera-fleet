@@ -54,10 +54,15 @@ type Plan struct {
 }
 
 // SwarmResult aggregates the per-leaf outcomes.
+//
+// Cancelled is true if Execute returned because its ctx was cancelled before
+// every leaf could finish; OK is forced to false in that case so callers
+// don't have to special-case the cancellation when computing roll-ups.
 type SwarmResult struct {
 	TaskID    string
 	Leaves    []LeafResult
 	OK        bool
+	Cancelled bool
 	StartedAt time.Time
 	EndedAt   time.Time
 }
@@ -72,6 +77,14 @@ type Orchestrator struct {
 // Execute runs the swarm. Each leaf is executed (possibly in parallel up to
 // plan.MaxParallel), and on success its returned entries are appended to the
 // parent ledger under plan.TaskID. The aggregate SwarmResult is returned.
+//
+// If ctx is cancelled mid-flight (e.g. via the runregistry/CancelTask RPC
+// path), Execute stops spawning new leaves, lets in-flight leaves observe the
+// same cancelled context, and writes a single explicit
+// `{phase:"swarm", action:"cancel", result:"cancelled"}` ledger entry before
+// returning. The billing reconciliation path treats that entry as
+// authoritative "do not emit a usage record" — no `ResultBill` entry is ever
+// written for a cancelled run.
 func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, error) {
 	if o.Run == nil {
 		return nil, errors.New("orchestrator: LeafRunner is nil")
@@ -95,6 +108,13 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 	var wg sync.WaitGroup
 
 	for i, in := range plan.Leaves {
+		// Honour context cancellation between dispatches: stop spawning new
+		// leaves once the swarm has been cancelled. In-flight leaves are not
+		// torn down here — they inherit the same ctx and will observe its
+		// Done channel themselves.
+		if ctx.Err() != nil {
+			break
+		}
 		i := i
 		in := in
 		wg.Add(1)
@@ -108,6 +128,11 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 			for attempt := 0; attempt <= plan.RetryEach; attempt++ {
 				entries, err = o.Run(ctx, in)
 				if err == nil {
+					break
+				}
+				// Don't retry through a cancellation — the operator
+				// asked us to stop, not to keep trying.
+				if ctx.Err() != nil {
 					break
 				}
 			}
@@ -136,6 +161,12 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 		}
 	}
 
+	// Detect orchestrator-level cancellation. If ctx was cancelled, the
+	// per-leaf errors are an artifact of the cancel signal, not a real
+	// swarm failure; the billing path needs a single explicit cancel entry
+	// instead of the usual leaf-error / done pair.
+	cancelled := ctx.Err() != nil
+
 	// Merge per-leaf entries into the parent ledger.
 	if o.Ledger != nil {
 		// Parent "swarm_start" marker.
@@ -150,6 +181,11 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 				// leaf's existing phase preserved.
 				e.TaskID = plan.TaskID
 				_ = o.Ledger.Append(plan.TaskID, e)
+			}
+			if cancelled {
+				// Skip per-leaf ok/error spam — the explicit
+				// swarm/cancel entry below stands in for all of them.
+				continue
 			}
 			if lr.Err != nil {
 				_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
@@ -167,19 +203,41 @@ func (o *Orchestrator) Execute(ctx context.Context, plan Plan) (*SwarmResult, er
 				})
 			}
 		}
-		final := ledger.ResultOK
-		if !result.OK {
-			final = ledger.ResultError
+		if cancelled {
+			// Authoritative cancel marker — billing must NOT emit a
+			// usage (`ResultBill`) record when this entry is present.
+			_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+				Phase:  "swarm",
+				Action: "cancel",
+				Result: ResultCancelled,
+			})
+		} else {
+			final := ledger.ResultOK
+			if !result.OK {
+				final = ledger.ResultError
+			}
+			_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
+				Phase:  "swarm",
+				Action: "done:" + plan.ParentRun,
+				Result: final,
+			})
 		}
-		_ = o.Ledger.Append(plan.TaskID, ledger.Entry{
-			Phase:  "swarm",
-			Action: "done:" + plan.ParentRun,
-			Result: final,
-		})
+	}
+
+	if cancelled {
+		result.OK = false
+		result.Cancelled = true
 	}
 
 	return result, nil
 }
+
+// ResultCancelled is the ledger Result string written for an orchestrator
+// cancellation. Mirrors ledger.ResultOK / ledger.ResultBill naming. Defined
+// here (rather than in the ledger package) so the cancellation contract lives
+// next to the code that writes it; the ledger package treats Result as an
+// opaque string.
+const ResultCancelled = "cancelled"
 
 // Summary returns a one-line human-readable description of the swarm outcome.
 func (r *SwarmResult) Summary() string {
