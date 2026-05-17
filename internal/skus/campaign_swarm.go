@@ -30,10 +30,13 @@ func NewCampaignSwarmRouter(deps SKURunnerDeps) *CampaignSwarmRouter {
 // Dispatch implements rpc.SKURouter for the campaign-swarm SKU.
 //
 // WS-A behaviour:
-//  1. Emit one BillEvent{Meter: "campaigns_launched", Units: 1} —
-//     campaign-swarm is per-job-fixed (not metered), so Units=1
-//     represents "this one campaign". The cents are zero in WS-A; WS-C
-//     fills in OneShotCents from the pricing tier.
+//  1. Emit one BillEvent{Meter: "S", Units: 1} — campaign-swarm is
+//     per-job-fixed; the catalog Dispatcher (cloud-side) builds the
+//     StripeRef key as "<sku.Name>:<Meter>" — so Meter MUST be the
+//     tier letter (S/M/L), not a semantic counter name. WS-A defaults
+//     to "S" (smallest tier); WS-C will pick the tier based on inputs
+//     (channel count, max_outreach, etc.) and fill in OneShotCents
+//     from the pricing tier.
 //  2. Append a terminal `phase: "complete"` entry.
 //  3. Return nil.
 func (r *CampaignSwarmRouter) Dispatch(ctx context.Context, taskID, tenantID string, _ map[string]interface{}) error {
@@ -46,7 +49,7 @@ func (r *CampaignSwarmRouter) Dispatch(ctx context.Context, taskID, tenantID str
 	if r.deps.Billing != nil {
 		_ = r.deps.Billing.Emit(ctx, taskID, tenantID, BillEvent{
 			SKU:        "campaign-swarm@v1",
-			Meter:      "campaigns_launched",
+			Meter:      "S", // tier letter; catalog Dispatcher builds StripeRef "campaign-swarm:S"
 			Units:      1,
 			OccurredAt: now(),
 		})
