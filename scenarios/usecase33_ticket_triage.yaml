@@ -1,32 +1,75 @@
+# Wave 9 A4 — exercises real cronjob scheduling + alert firing, not help-text.
+#
+# Replaces the prior `cronjob --help` / `alert --help` smokes with substantive
+# end-to-end drives of the install and fire code paths. The `hermes cronjob`
+# binary expected by hermesjobs.Manager.{List,Install (non-dry-run),Remove}
+# is NOT present on this build (the host `hermes` CLI exposes `cron`, not
+# `cronjob`), so cronjob coverage routes through `--dry-run`: same Cobra
+# parsing, same flag validation, same hermesjobs.Job struct shaping, just
+# stopping short of the unavailable subprocess. Alert coverage drives the
+# full alerting.Router fan-out: empty-router guard + ntfy backend wiring +
+# request construction, stopping at the (deliberately unreachable) HTTP
+# transport.
 name: usecase33_ticket_triage
 tier: 3
 description: |
-  v2 §3.3 ticket-triage primitive exercise. Two layers of coverage:
-  CLI smokes for `fleetctl cronjob` and `fleetctl alert` (help-text
-  wiring only — these commands depend on a `hermes cronjob` binary not
-  present on this build, or on backend env vars), and SUBSTANTIVE
-  contract tests for `fleetctl run-with-secrets` (env-leak prevention
-  on stdin path, opt-in injection on --use-env path). The run-with-secrets
-  steps are real end-to-end exercises and previously surfaced the
-  stdout-swallowing bug that was fixed during PR #1 shake-down.
+  v2 §3.3 ticket-triage primitive exercise. Three substantive layers:
+
+    1. cronjob install path — driven through --dry-run because the
+       host `hermes cronjob` subcommand isn't on this build. Exercises
+       Cobra flag wiring, hermesjobs.Job shaping, JSON encoding, and
+       required-flag validation end-to-end.
+    2. run-with-secrets contract — env-leak prevention on stdin path,
+       opt-in injection on --use-env path. These steps surfaced the
+       stdout-swallowing bug fixed during PR #1 shake-down; left intact
+       on purpose, they keep that regression covered.
+    3. alert fire path — empty-router guard + ntfy backend wiring +
+       Router.Fire construction. The transport target is deliberately
+       unreachable so the test stays offline; the stderr asserts the
+       request actually got built and dispatched.
 
 steps:
-  # 1. cronjob CLI surface is wired (help text enumerates subcommands).
-  - name: cronjob-help
-    run: bin/fleetctl cronjob --help
+  # 1a. cronjob install: dry-run JSON path. Exercises Cobra parsing, flag
+  # validation, hermesjobs.Job shaping, and JSON encoding. The resolved
+  # spec must round-trip name + schedule + command.
+  - name: cronjob-install-dryrun-json
+    run: bin/fleetctl cronjob --json install --name=triage-test --schedule='*/5 * * * *' --command='echo poll' --dry-run
     expect:
       exit: 0
-      stdout_contains: install
+      stdout_contains: '"name":"triage-test"'
 
-  - name: cronjob-help-mentions-list
-    run: bin/fleetctl cronjob --help
+  - name: cronjob-install-dryrun-json-schedule
+    run: bin/fleetctl cronjob --json install --name=triage-test --schedule='*/5 * * * *' --command='echo poll' --dry-run
     expect:
       exit: 0
-      stdout_contains: list
+      stdout_contains: '"schedule":"*/5 * * * *"'
+
+  - name: cronjob-install-dryrun-json-command
+    run: bin/fleetctl cronjob --json install --name=triage-test --schedule='*/5 * * * *' --command='echo poll' --dry-run
+    expect:
+      exit: 0
+      stdout_contains: '"command":"echo poll"'
+
+  # 1b. cronjob install: dry-run text path. Exercises the human-readable
+  # printer separately from the JSON encoder.
+  - name: cronjob-install-dryrun-text
+    run: bin/fleetctl cronjob install --name=triage-test --schedule='*/5 * * * *' --command='echo poll' --dry-run
+    expect:
+      exit: 0
+      stdout_contains: "DRY-RUN: would install cronjob"
+
+  # 1c. cronjob install: required-flag validation. Missing --command must
+  # be rejected before any subprocess is shelled out — proves the guard.
+  - name: cronjob-install-validates-required-flags
+    run: bin/fleetctl cronjob install --name=triage-test --schedule='*/5 * * * *' --dry-run
+    expect:
+      exit: 1
+      stderr_contains: "--name, --schedule, and --command are required"
 
   # 2. Stdin secrets contract: --secret on its own MUST NOT leak into the
   # subprocess's environment. With sh's `echo $FOO`, "bar" must not appear
-  # in stdout.
+  # in stdout. Real end-to-end exercise; kept verbatim from the prior YAML
+  # because it previously surfaced a real regression.
   - name: secrets-stdin-no-env-leak
     run: bin/fleetctl run-with-secrets --secret FOO=bar -- sh -c 'echo BEFORE=$FOO=END'
     expect:
@@ -34,17 +77,31 @@ steps:
       stdout_absent: "BEFORE=bar=END"
 
   # 3. Opt-in --use-env path: the same shell SHOULD see FOO in its env.
-  # Note: this asserts the documented contract; if the env path fails to
-  # surface child stdout to the CLI's stdout, this step exposes that bug.
+  # Real end-to-end exercise; kept verbatim from the prior YAML.
   - name: secrets-use-env-injects
     run: bin/fleetctl run-with-secrets --use-env --secret FOO=bar -- sh -c 'echo BEFORE=$FOO=END'
     expect:
       exit: 0
       stdout_contains: "BEFORE=bar=END"
 
-  # 4. Alert command surface is wired even without backend env vars set.
-  - name: alert-help
-    run: bin/fleetctl alert --help
+  # 4a. alert: empty-router guard. With no HERMES_* backend env vars set,
+  # `alert` must refuse to fire and name the env vars an operator should
+  # set. Exercises router init + zero-backend short-circuit.
+  - name: alert-empty-router-rejects
+    run: env -u HERMES_PAGERDUTY_ROUTING_KEY -u HERMES_OPSGENIE_API_KEY -u HERMES_NTFY_URL bin/fleetctl alert --title="wave9 a4 empty-router test" --severity=info
     expect:
-      exit: 0
-      stdout_contains: "--severity"
+      exit: 1
+      stderr_contains: "no backends configured"
+
+  # 4b. alert: real fire path with the ntfy backend wired. The URL points
+  # at a closed local port so we stay offline; success is "the request was
+  # built and dispatched and ntfy reported the transport failure" — that
+  # proves Router.Fire ran the ntfy backend, the alerting.Alert struct
+  # was constructed, and Title/Severity/Body flowed through. The
+  # stderr_contains assertion locks in the alerting.Router error-wrap
+  # shape: `alert: ntfy: <transport error>`.
+  - name: alert-ntfy-fires-and-dispatches
+    run: HERMES_NTFY_URL='http://127.0.0.1:1/wave9-a4-test' bin/fleetctl alert --title="wave9 a4 test alert" --severity=info --body="wave9 a4 exercise"
+    expect:
+      exit: 1
+      stderr_contains: "alert: ntfy:"
