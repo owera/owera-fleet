@@ -3,6 +3,8 @@ package skus
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,16 +29,18 @@ func (r *recordingBillingEmitter) Emit(_ context.Context, taskID, tenantID strin
 	return nil
 }
 
-// TestTriageWatchDispatchStub locks the WS-A contract: one BillEvent
-// recorded with the expected meter + zero units, plus exactly one
-// `bill` ledger entry and one `complete` ledger entry, both stamped
-// with tenant_id + task_id.
+// TestTriageWatchDispatchStub locks the WS-A + H1 contract: one BillEvent
+// recorded with the expected meter + zero units, and NO terminal
+// `complete` ledger entry (triage-watch is long-running; only
+// fleet.CancelTask should write a terminal entry, in WS-B's cancellation
+// path).
 //
-// Note: this test uses a recordingBillingEmitter (NOT LedgerBillingEmitter)
-// to inspect the BillEvent struct directly. The ledger-side assertion
-// counts only the `complete` entry. A separate test (below) covers the
-// LedgerBillingEmitter end-to-end so we know the `bill` entry actually
-// hits the signed ledger in production wiring.
+// Note: this test uses a recordingBillingEmitter (NOT
+// LedgerBillingEmitter) to inspect the BillEvent struct directly. The
+// ledger-side assertion checks that the stub does NOT add anything of
+// its own to the ledger after dispatch returns — a separate test
+// (below) covers the LedgerBillingEmitter end-to-end so we know the
+// `bill` entry actually hits the signed ledger in production wiring.
 func TestTriageWatchDispatchStub(t *testing.T) {
 	tmp := t.TempDir()
 	led, err := ledger.Open(filepath.Join(tmp, "ledger"))
@@ -53,6 +57,14 @@ func TestTriageWatchDispatchStub(t *testing.T) {
 	}
 
 	r := NewTriageWatchRouter(deps)
+
+	// H1 contract: triage-watch declares itself long-running so the
+	// SubmitJobHandler keeps the runregistry entry alive and skips any
+	// auto-terminal ledger entry.
+	if !r.LongRunning() {
+		t.Fatal("TriageWatchRouter.LongRunning() = false, want true")
+	}
+
 	const (
 		taskID   = "task-triage-stub-1"
 		tenantID = "ten_acme"
@@ -86,28 +98,29 @@ func TestTriageWatchDispatchStub(t *testing.T) {
 		t.Errorf("BillEvent.OccurredAt: got %v, want %v", got.Event.OccurredAt, frozen)
 	}
 
-	// Ledger should have exactly one `complete` entry (the recording
-	// emitter swallows the would-be `bill` entry).
+	// Ledger should be empty — recording emitter swallowed the would-be
+	// `bill` entry, and the long-running router writes no terminal entry.
+	// ledger.Read returns ENOENT when no entries were ever written; for
+	// this contract assertion that's the SAME as "empty ledger", so we
+	// accept ENOENT and otherwise demand zero entries.
 	entries, err := led.Read(taskID)
 	if err != nil {
-		t.Fatalf("read ledger: %v", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read ledger: %v", err)
+		}
+		entries = nil
 	}
-	if len(entries) != 1 {
-		t.Fatalf("ledger entry count: got %d, want 1; entries=%+v", len(entries), entries)
-	}
-	if entries[0].Phase != "complete" {
-		t.Errorf("ledger[0].Phase: got %q, want %q", entries[0].Phase, "complete")
-	}
-	if entries[0].TenantID != tenantID || entries[0].TaskID != taskID {
-		t.Errorf("ledger[0] tenancy: got task=%q tenant=%q, want task=%q tenant=%q",
-			entries[0].TaskID, entries[0].TenantID, taskID, tenantID)
+	if len(entries) != 0 {
+		t.Fatalf("ledger entry count: got %d, want 0 (long-running router must not write terminal entries); entries=%+v", len(entries), entries)
 	}
 }
 
 // TestTriageWatchDispatchWritesBillEntry exercises the LedgerBillingEmitter
-// path: with the production emitter wired in, Dispatch should leave two
-// entries in the ledger — one `bill`, one `complete` — both stamped
-// with the same tenant_id and task_id.
+// path: with the production emitter wired in, Dispatch should leave
+// exactly one entry in the ledger — the `bill` entry — stamped with the
+// task_id + tenant_id. Crucially there is NO `complete` entry: the
+// router is long-running and the task stays in `running` state until
+// cancellation.
 func TestTriageWatchDispatchWritesBillEntry(t *testing.T) {
 	tmp := t.TempDir()
 	led, err := ledger.Open(filepath.Join(tmp, "ledger"))
@@ -135,29 +148,15 @@ func TestTriageWatchDispatchWritesBillEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read ledger: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("ledger entry count: got %d, want 2; entries=%+v", len(entries), entries)
+	if len(entries) != 1 {
+		t.Fatalf("ledger entry count: got %d, want 1 (bill only, no complete for long-running); entries=%+v", len(entries), entries)
 	}
-	var bill, complete *ledger.Entry
-	for i := range entries {
-		e := &entries[i]
-		switch e.Phase {
-		case "bill":
-			bill = e
-		case "complete":
-			complete = e
-		}
+	bill := entries[0]
+	if bill.Phase != "bill" {
+		t.Fatalf("ledger[0].Phase: got %q, want %q (long-running router must NOT write a terminal entry)", bill.Phase, "bill")
 	}
-	if bill == nil {
-		t.Fatalf("no `bill` ledger entry written")
-	}
-	if complete == nil {
-		t.Fatalf("no `complete` ledger entry written")
-	}
-	for _, e := range []*ledger.Entry{bill, complete} {
-		if e.TaskID != taskID || e.TenantID != tenantID {
-			t.Errorf("entry %s missing tenancy: task=%q tenant=%q", e.Phase, e.TaskID, e.TenantID)
-		}
+	if bill.TaskID != taskID || bill.TenantID != tenantID {
+		t.Errorf("bill entry missing tenancy: task=%q tenant=%q", bill.TaskID, bill.TenantID)
 	}
 
 	// The bill entry's Data should round-trip into BillEvent.
