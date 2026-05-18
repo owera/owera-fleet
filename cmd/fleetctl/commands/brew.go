@@ -333,6 +333,13 @@ func brewProbeOne(ctx context.Context, dialer Dialer, t brewTarget, essentials [
 // brewProbeScript returns the POSIX shell script the probe runs on each
 // host. Output format is `key=value` lines that parseBrewProbeOutput
 // reads back. Self-contained — no helpers, no Bash-isms.
+//
+// The script evaluates `brew shellenv` before checking essentials so
+// brew-installed binaries are visible on PATH even in a fresh SSH
+// session that hasn't sourced ~/.local/bin/env. Without this, command -v
+// would miss brew-managed binaries entirely and every probe would
+// falsely report them missing (which would then trigger redundant
+// `brew install` runs on already-installed packages).
 func brewProbeScript(essentials []string) string {
 	var b strings.Builder
 	b.WriteString(`arch=$(uname -m 2>/dev/null || echo "?")
@@ -341,7 +348,13 @@ for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do
   if [ -x "$p" ]; then brew="$p"; break; fi
 done
 ver=""
-if [ -n "$brew" ]; then ver=$("$brew" --version 2>/dev/null | head -1); fi
+if [ -n "$brew" ]; then
+  ver=$("$brew" --version 2>/dev/null | head -1)
+  # Bring brew-managed binaries onto PATH for the command -v checks
+  # below. Without this, brew-installed essentials are invisible to a
+  # fresh SSH session that hasn't sourced ~/.local/bin/env.
+  eval "$("$brew" shellenv 2>/dev/null)"
+fi
 shellenv=no
 if [ -f "$HOME/.local/bin/env" ] && grep -q "brew shellenv" "$HOME/.local/bin/env" 2>/dev/null; then shellenv=yes; fi
 printf 'arch=%s\n' "$arch"
