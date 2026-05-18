@@ -60,6 +60,23 @@ type SubmitJobResult struct {
 //
 // Returning a non-nil error from Dispatch causes the RPC to fail with
 // CodeInternalError (or whatever *Error the router returns).
+//
+// # Finite vs long-running routers
+//
+// Finite routers (e.g. delegate.shell.v1, campaign-swarm@v1) emit a
+// terminal `phase: "complete"|"failed"` entry from inside Dispatch and
+// return when the job is done. The cloud-side LedgerTailClient watches
+// for that terminal entry to advance the customer job to `succeeded` /
+// `failed`.
+//
+// Long-running / subscription routers (e.g. triage-watch@v1) install a
+// cronjob (or other persistent worker) inside Dispatch and return nil
+// as soon as the worker is wired up; the task stays in the `running`
+// state until `fleet.CancelTask` is invoked. Such routers MUST NOT
+// emit a terminal ledger entry from Dispatch — doing so would close
+// out the customer job prematurely. They opt into this lifecycle by
+// implementing the optional [LongRunningRouter] interface (or by
+// embedding [LongRunning] for the bool-method-only opt-in).
 type SKURouter interface {
 	// Dispatch routes inputs into a primitive. taskID is pre-allocated by
 	// the handler so the ledger trail can start before any worker is
@@ -68,13 +85,61 @@ type SKURouter interface {
 	Dispatch(ctx context.Context, taskID, tenantID string, inputs map[string]interface{}) error
 }
 
+// LongRunningRouter is an optional interface SKURouter implementations
+// can satisfy to declare a subscription / cronjob-style lifecycle. When
+// SubmitJobHandler sees a router report LongRunning() == true, it skips
+// any auto-synthesised terminal ledger entry and leaves the task in the
+// `running` state. Cancellation via fleet.CancelTask (which invokes the
+// runregistry cancel func) is what eventually writes the terminal
+// `cancelled` entry.
+//
+// Routers that do not implement this interface are treated as finite —
+// they are responsible for emitting their own terminal entry before
+// Dispatch returns.
+//
+// The interface is intentionally tiny (single bool method) to keep the
+// contract backward-compatible: every router predating H1 still
+// satisfies SKURouter and is treated as finite, no recompile required.
+type LongRunningRouter interface {
+	// LongRunning reports whether this router installs a persistent
+	// worker (cronjob, daemon, etc.) and intends the task to remain in
+	// the `running` state after Dispatch returns. The handler reads
+	// this once per dispatch, immediately after Dispatch returns nil.
+	LongRunning() bool
+}
+
+// isLongRunning returns true iff r reports itself as long-running. The
+// helper centralises the type-assert so handler logic and tests share
+// the same probe semantics (a router that does NOT implement
+// LongRunningRouter is finite by default).
+func isLongRunning(r SKURouter) bool {
+	lr, ok := r.(LongRunningRouter)
+	return ok && lr.LongRunning()
+}
+
 // SKURouterFunc adapts a plain function to the SKURouter interface.
+// Function-shaped routers are finite by default; wrap with
+// [LongRunningSKURouterFunc] to declare a long-running lifecycle.
 type SKURouterFunc func(ctx context.Context, taskID, tenantID string, inputs map[string]interface{}) error
 
 // Dispatch implements SKURouter.
 func (f SKURouterFunc) Dispatch(ctx context.Context, taskID, tenantID string, inputs map[string]interface{}) error {
 	return f(ctx, taskID, tenantID, inputs)
 }
+
+// LongRunningSKURouterFunc adapts a plain function to the SKURouter +
+// LongRunningRouter interfaces. Useful in tests and lightweight
+// production wiring where a router is just a closure but needs to opt
+// into the long-running lifecycle.
+type LongRunningSKURouterFunc func(ctx context.Context, taskID, tenantID string, inputs map[string]interface{}) error
+
+// Dispatch implements SKURouter.
+func (f LongRunningSKURouterFunc) Dispatch(ctx context.Context, taskID, tenantID string, inputs map[string]interface{}) error {
+	return f(ctx, taskID, tenantID, inputs)
+}
+
+// LongRunning implements LongRunningRouter, always returning true.
+func (f LongRunningSKURouterFunc) LongRunning() bool { return true }
 
 // SubmitJobHandler owns the dependencies the SubmitJob RPC method needs.
 // Construct via [NewSubmitJobHandler] and register with
@@ -206,15 +271,49 @@ func (h *SubmitJobHandler) Handle(ctx context.Context, raw json.RawMessage) (any
 		}
 	}
 
-	// Register a cancellable child ctx under taskID so fleet.CancelTask
-	// can interrupt this dispatch via runregistry. Defers ensure the
-	// entry is removed whether dispatch succeeds, errors, or is cancelled.
-	dispatchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Register a cancellable ctx under taskID so fleet.CancelTask can
+	// interrupt the work via runregistry.
+	//
+	// Two lifecycles:
+	//
+	//   - Finite routers: dispatch ctx is derived from the request ctx
+	//     and torn down when Handle returns. runregistry registration is
+	//     scoped to the duration of Dispatch.
+	//
+	//   - Long-running routers: dispatch ctx is derived from
+	//     context.Background() because the persistent worker (cronjob,
+	//     daemon, etc.) must outlive the inbound JSON-RPC request. The
+	//     runregistry entry stays in place after Handle returns so
+	//     fleet.CancelTask can find it and tear the worker down. The
+	//     router itself is responsible for emitting the terminal
+	//     `cancelled` entry when its ctx is cancelled.
+	longRunning := isLongRunning(router)
+	var (
+		dispatchCtx context.Context
+		cancel      context.CancelFunc
+	)
+	if longRunning {
+		dispatchCtx, cancel = context.WithCancel(context.Background())
+	} else {
+		dispatchCtx, cancel = context.WithCancel(ctx)
+	}
 	runregistry.Register(taskID, cancel)
-	defer runregistry.Unregister(taskID)
+	// Cleanup runs only for finite routers. For long-running, the
+	// runregistry entry + ctx survive Handle's return; fleet.CancelTask
+	// (via runregistry.Cancel) is the one path that invokes cancel and
+	// removes the registration.
+	if !longRunning {
+		defer cancel()
+		defer runregistry.Unregister(taskID)
+	}
 
 	if err := router.Dispatch(dispatchCtx, taskID, p.TenantID, p.Inputs); err != nil {
+		// On dispatch error, always tear down — even for long-running
+		// routers — because the persistent worker never got wired up.
+		if longRunning {
+			cancel()
+			runregistry.Unregister(taskID)
+		}
 		if h.Ledger != nil {
 			_ = h.Ledger.Append(taskID, ledger.Entry{
 				Ts:         h.Now(),
@@ -233,6 +332,11 @@ func (h *SubmitJobHandler) Handle(ctx context.Context, raw json.RawMessage) (any
 		return nil, NewError(CodeInternalError, "dispatch: "+err.Error())
 	}
 
+	// For long-running routers we deliberately do NOT synthesise any
+	// terminal ledger entry here — the task stays in `running` state
+	// until cancellation. Finite routers are expected to have written
+	// their own `complete` / `failed` entry from inside Dispatch before
+	// returning nil.
 	return SubmitJobResult{TaskID: taskID}, nil
 }
 

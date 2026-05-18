@@ -152,11 +152,7 @@ WS-B and WS-C are 2-3 days each; both gated on which paid external API credentia
    - Operator-side credential vault (Vault, AWS Secrets Manager, etc.).
 
    For V0: simplest is `.env.gpg` keyed `<tenant_id>__<service>` (e.g. `ten_6cQ5L0UvzkJ4TXCW__zendesk_api_token`). Document the convention; revisit if a paying customer asks for SSO-style secret rotation.
-3. **Long-running task model.** `triage-watch` runs indefinitely. The handler currently writes terminal entries when `Dispatch` returns nil. Need either:
-   - Don't return nil from triage-watch's Dispatch until cancelled, OR
-   - Add a "long-running" flag to `SKURouter` so the handler doesn't auto-terminate.
-
-   Recommend the second (cleaner contract); ~10-line API change in `submitjob.go`.
+3. **Long-running task model.** ✅ **Resolved (H1, 2026-05-17).** Added the optional `rpc.LongRunningRouter` interface (`LongRunning() bool`); when a router satisfies it and returns true, `SubmitJobHandler` derives the dispatch ctx from `context.Background()` (so the persistent worker outlives the inbound request), keeps the `runregistry` entry alive after `Handle` returns, and skips any synthesised terminal ledger entry. `TriageWatchRouter` opts in; `CampaignSwarmRouter` and `ShellDelegateRouter` remain finite by default. Cancellation via `fleet.CancelTask` is the only path that writes a terminal entry for long-running SKUs.
 4. **Cost-cap interaction.** Cloud already rejects with 402 if projected cost > cap (we hit this in the 2026-05-17 smoke). For long-running SKUs that bill monthly, the cap check uses `Pricer.ProjectMonthly(sku, inputs)` — that's already correct. No operator-side work.
 
 ## Test plan
