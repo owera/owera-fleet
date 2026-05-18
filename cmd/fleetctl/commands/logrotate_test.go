@@ -45,15 +45,9 @@ func readGzip(t *testing.T, path string) []byte {
 }
 
 type logrotateFixture struct {
-	dir        string
+	dir         string
 	selfLogPath string
-	logger     *flogger
 }
-
-// flogger is a stand-in *log.Logger that writes to /dev/null; we use
-// the real `log.New(devnull)` constructor via newTestLogger from
-// watchdog_test.go to keep the test helpers consistent across files.
-type flogger struct{}
 
 func newLogrotateFixture(t *testing.T) *logrotateFixture {
 	t.Helper()
@@ -64,7 +58,7 @@ func newLogrotateFixture(t *testing.T) *logrotateFixture {
 		t.Fatalf("write self log: %v", err)
 	}
 	return &logrotateFixture{
-		dir:        tmp,
+		dir:         tmp,
 		selfLogPath: self,
 	}
 }
@@ -310,7 +304,3 @@ func TestResolveKeep_FlagBeatsEnv(t *testing.T) {
 	}
 }
 
-// ensure the dead-import warning never trips; the *flogger* type exists
-// only to keep the file's intent obvious to future readers and is not
-// instantiated by any test.
-var _ = (*flogger)(nil)
