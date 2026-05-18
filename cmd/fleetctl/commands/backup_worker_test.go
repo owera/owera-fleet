@@ -23,8 +23,9 @@ func withFakeRsync(t *testing.T, exitByDestSuffix map[string]int, defaultExit in
 	var script strings.Builder
 	script.WriteString("#!/bin/sh\n")
 	script.WriteString(fmt.Sprintf("echo \"$@\" >> %q\n", argsFile))
-	// last arg is the dest with a trailing slash
-	script.WriteString("dest=\"${@: -1}\"\n")
+	// POSIX-portable "last positional arg": iterate, retain. Bash's
+	// ${@: -1} is unsupported in dash (the /bin/sh on Ubuntu CI).
+	script.WriteString("dest=\"\"\nfor a in \"$@\"; do dest=\"$a\"; done\n")
 	script.WriteString("case \"$dest\" in\n")
 	for suffix, code := range exitByDestSuffix {
 		script.WriteString(fmt.Sprintf("  *%s*) exit %d ;;\n", suffix, code))
