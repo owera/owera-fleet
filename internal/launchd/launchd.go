@@ -107,6 +107,20 @@ const (
 	// gzip-rotating ~/.hermes/logs/*.jsonl over the configured size
 	// threshold, keeping the newest N per-log rotations.
 	TemplateOweraLogrotate = "owera-logrotate"
+	// TemplateOweraBackup renders the launchd plist for the Go-native
+	// restic snapshotter (com.owera.backup), which supersedes the
+	// legacy hermes-setup bash backup (com.hermes.backup) by wrapping
+	// `restic backup` + `restic forget --prune` against the env-
+	// configured repository every day at 03:15 BRT.
+	TemplateOweraBackup = "owera-backup"
+	// TemplateOweraBackupWorker renders the launchd plist for the
+	// Go-native worker-state rsync (com.owera.backup-worker), which
+	// supersedes the legacy hermes-setup bash worker backup
+	// (com.hermes.backup-worker) by rsyncing each worker's
+	// /Users/hermes/.hermes/ into the gateway's
+	// ~/.hermes/worker-backups/<host>/ every day at 03:05 BRT
+	// (10 min before the restic snapshot picks it up).
+	TemplateOweraBackupWorker = "owera-backup-worker"
 )
 
 // AllTemplates returns the canonical list of bundled template names in
@@ -125,6 +139,8 @@ func AllTemplates() []string {
 		TemplateHeartbeatsBridge,
 		TemplateOweraWatchdog,
 		TemplateOweraLogrotate,
+		TemplateOweraBackup,
+		TemplateOweraBackupWorker,
 	}
 }
 
