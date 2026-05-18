@@ -101,6 +101,12 @@ const (
 	// consuming gateway-side ~/.hermes/heartbeats/<host>.json mtimes
 	// and firing alerts through internal/alerting.
 	TemplateOweraWatchdog = "owera-watchdog"
+	// TemplateOweraLogrotate renders the launchd plist for the
+	// Go-native log rotator (com.owera.logrotate), which supersedes
+	// the legacy hermes-setup bash rotator (com.hermes.logrotate) by
+	// gzip-rotating ~/.hermes/logs/*.jsonl over the configured size
+	// threshold, keeping the newest N per-log rotations.
+	TemplateOweraLogrotate = "owera-logrotate"
 )
 
 // AllTemplates returns the canonical list of bundled template names in
@@ -118,6 +124,7 @@ func AllTemplates() []string {
 		TemplateSnapshotPublish,
 		TemplateHeartbeatsBridge,
 		TemplateOweraWatchdog,
+		TemplateOweraLogrotate,
 	}
 }
 
