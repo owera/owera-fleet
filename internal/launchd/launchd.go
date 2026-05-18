@@ -95,6 +95,12 @@ const (
 	TemplateLogAggregate     = "logaggregate"
 	TemplateSnapshotPublish  = "snapshot-publish"
 	TemplateHeartbeatsBridge = "heartbeats-bridge"
+	// TemplateOweraWatchdog renders the launchd plist for the Go-native
+	// staleness watchdog (com.owera.watchdog), which supersedes the
+	// legacy hermes-setup bash watchdog (com.hermes.watchdog) by
+	// consuming gateway-side ~/.hermes/heartbeats/<host>.json mtimes
+	// and firing alerts through internal/alerting.
+	TemplateOweraWatchdog = "owera-watchdog"
 )
 
 // AllTemplates returns the canonical list of bundled template names in
@@ -111,6 +117,7 @@ func AllTemplates() []string {
 		TemplateLogAggregate,
 		TemplateSnapshotPublish,
 		TemplateHeartbeatsBridge,
+		TemplateOweraWatchdog,
 	}
 }
 
