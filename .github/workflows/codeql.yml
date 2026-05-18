@@ -1,0 +1,54 @@
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, "wave-*"]
+  schedule:
+    # Weekly Monday 06:00 UTC — picks up newly-published CodeQL queries
+    # without waiting for the next push.
+    - cron: "0 6 * * 1"
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    # CodeQL alert upload requires GitHub Advanced Security, which is
+    # free on public repos and paid on private ones. The repo is public
+    # as of 2026-05-17; the guard stays defensive so the workflow no-ops
+    # gracefully if visibility ever flips back.
+    if: github.event.repository.private == false || github.event.repository.visibility == 'public'
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: init CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      # Go needs an explicit build so CodeQL's extractor sees every package.
+      - name: build Go
+        run: go build ./...
+
+      - name: analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
