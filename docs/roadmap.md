@@ -2,11 +2,11 @@
 
 > **Audience: internal team + cloud-plane developers.** Sister doc: [`owera-cloud/docs/roadmap.md`](https://github.com/owera/owera-cloud/blob/main/docs/roadmap.md). Master plan that defined the green-field recreation: [`knowing-all-you-now-calm-leaf.md`](../knowing-all-you-now-calm-leaf.md). Forward view; source of truth for delivered state is the git log on `main`.
 
-**Last updated:** 2026-05-17 (evening, post-Wave-9-A+B1).
+**Last updated:** 2026-05-17 (late evening, post-Wave-10-Track-A + V0 Stripe demo + public flip).
 
 ## What we're working on right now
 
-Wave 9-A + B1 (the engineering side of Phase-1 verification + Phase-2 primitive coverage + the customer-plane reconciler) closed today. Seven owera-fleet PRs and four owera-cloud PRs merged this session. The remaining items are all operator-action-bound (hardware procurement, account access, BR tax/legal).
+**Phase 1, 2, 2.5, 3 + Track-A hardening sprint + first V0 Stripe demo all closed in the evening of 2026-05-17.** A live `campaign-swarm@v1` job submitted via `https://owera-agentic-api.fly.dev/v1/jobs` traversed the full chain (cloud queue → dispatcher → JSON-RPC over the tunnel → operator-plane SKURouter → ledger → cloud bill subscriber → outbox → reconciler → Stripe SDK) and resulted in a real test-mode Stripe InvoiceItem on `cus_UXImEhwCti1Aq6`. Both repos flipped to public; CodeQL + GHAS + free Actions all active.
 
 | Thread | Status | Where |
 |---|---|---|
@@ -14,7 +14,9 @@ Wave 9-A + B1 (the engineering side of Phase-1 verification + Phase-2 primitive 
 | Cloud reconciler wire-up (outbox flusher → Stripe + daily drift detector) | ✅ Shipped + deployed | Production boot log shows `reconciler=on (drift detector, daily)`; outbox flusher tick interval 1m; drift detector tick interval 24h |
 | Phase-1 verification gate (T4.4 `audit config` + T12.1 `state --markdown` parity + T12.3 `bootstrap-worker` phases 1-9) | ✅ Shipped to `main` | PR #14 (audit config), #19 (bootstrap phases), #20 (state parity) |
 | Phase-2 e2e scenarios — usecases 32/33/34 now exercise live primitives, not help-text | ✅ Shipped to `main` | PR #15 (swarm), #16 (cronjob+alert), #17 (markers CLI + usecase34 wiring) |
-| End-to-end smoke of a V0 SKU through cloud → tunnel → operator → ledger → Stripe | 🚧 Operator-action: locate/rotate `OWERA_ADMIN_TOKEN` and submit a `triage-watch` job | Next executable step once token is in hand |
+| **V0 end-to-end Stripe demo** — real Stripe InvoiceItem fired from a live `campaign-swarm@v1` job submitted via `/v1/jobs` | ✅ Demo'd 2026-05-18 ~00:03 UTC | Customer `cus_UXImEhwCti1Aq6` in Stripe test mode |
+| **Track A hardening sprint** — long-running SKURouter (PR #26), tier selection (PR #25), V1 SKU stubs (PR #27), CodeQL workflow (PR #28) on fleet side | ✅ Merged | All 4 fleet Track-A PRs landed; CodeQL active on `main` with zero day-one findings |
+| **Repos public** — `owera/owera-fleet` + `owera/owera-cloud` both flipped 2026-05-18 ~00:50 UTC | ✅ Operator-action complete | GHAS + unlimited free Actions + CodeQL all active on both |
 | Cutover from `hermes-setup` bash prototype (C3) | 🚧 Gated on C1 staging-Mac verification of `fleetctl bootstrap-worker hermes@claw-staging.local` | Archive directory `docs/archive/` exists, empty; awaits the cutover commit |
 
 ## Phase status at a glance
@@ -121,3 +123,4 @@ The original `~/hermes-setup` bash workspace is being phased out. The cutover se
 |---|---|---|
 | 2026-05-17 (PM) | Claude (under Rodrigo) | Initial publication. Captures Phase 1 + Phase 2 primitive coverage, Phase 2.5 customer-plane seam status, Phase 4 gating, hermes-setup phase-out sequence. |
 | 2026-05-17 (evening) | Claude (under Rodrigo) | Wave-9-A + B1 close-out. 7 owera-fleet PRs merged (#14 audit config, #15 swarm e2e, #16 cronjob+alert e2e, #17 markers CLI, #18 drift cleanup, #19 bootstrap phases 1-9, #20 state parity) + 2 utility PRs (#13 drift fix already merged AM; #18 same-evening). Phase-1 verification gate engineering all green; Phase-2 e2e scenario coverage complete. Remaining holdouts (C1 staging Mac, C2 live gauntlet, C3 cutover) are operator-action-bound. |
+| 2026-05-17 (late evening) | Claude (under Rodrigo) | WS-A + V0 Stripe demo + Track-A hardening. Fleet PRs: #23 (WS-A stub routers — first V0 SKUs registered), #24 (campaign-swarm tier-letter meter convention fix), #25 (H2 tier selection from inputs), #26 (H1 long-running SKURouter contract), #27 (H4 V1 operator stubs research-brief/code-audit), #28 (CodeQL workflow). Plus 5 cloud-side PRs in same session. **Real Stripe InvoiceItem fired in production 2026-05-18 ~00:03 UTC** from a live `campaign-swarm@v1` submission — founding-plan verification step 10 demonstrably closed. Both repos flipped public ~00:50 UTC. CodeQL active on `owera-fleet/main` with zero day-one findings. Engineering critical path through Phase 3 is fully closed; only operator-action items remain (claw-staging.local, Stripe live mode, PagerDuty, BR tax/legal, design partner #1). |
