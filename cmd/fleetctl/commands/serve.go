@@ -110,6 +110,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	submit.RegisterSKU("triage-watch@v1", skus.NewTriageWatchRouter(skuDeps))
 	submit.RegisterSKU("campaign-swarm@v1", skus.NewCampaignSwarmRouter(skuDeps))
 
+	// V1 SKU routers (research-brief@v1, code-audit@v1). Same WS-A
+	// stub shape: emit one BillEvent + terminal `complete` entry. The
+	// real implementations land post-GA — research-brief calls into
+	// Hermes web/browser + structured-report rendering; code-audit
+	// installs a daily cronjob with cached AST + diff-only analysis.
+	submit.RegisterSKU("research-brief@v1", skus.NewResearchBriefRouter(skuDeps))
+	submit.RegisterSKU("code-audit@v1", skus.NewCodeAuditRouter(skuDeps))
+
 	srv.Register("fleet.SubmitJob", submit.Handle)
 
 	// fleet.CancelTask — looks up the task in runregistry and invokes
