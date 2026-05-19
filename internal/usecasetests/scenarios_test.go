@@ -635,3 +635,44 @@ func TestS6FailFirstSnapshotError(t *testing.T) {
 		t.Errorf("S6 message = %q, want 'first snapshot' substring", r.Message)
 	}
 }
+
+// --- S7 rename (issue #39) ------------------------------------------------
+//
+// S7 was renamed from "Security/process inventory" to "Process reachability"
+// to honestly reflect the Go port's narrower scope (SSH smoke + truncated
+// `ps -A`); the broader bash baseline (ps + lsof + launchctl) was lifted
+// to a future dedicated fleetctl security-inventory skill. These tests
+// pin both the DefaultScenarios entry and the runS7 Result so a future
+// refactor cannot silently drift the operator-visible name back.
+
+func TestS7RenameInDefaultScenarios(t *testing.T) {
+	const wantName = "Process reachability"
+	var got Scenario
+	for _, s := range DefaultScenarios() {
+		if s.ID == "S7" {
+			got = s
+			break
+		}
+	}
+	if got.ID == "" {
+		t.Fatalf("S7 not found in DefaultScenarios()")
+	}
+	if got.Name != wantName {
+		t.Errorf("S7 Name = %q, want %q", got.Name, wantName)
+	}
+	if got.Category != "observation" {
+		t.Errorf("S7 Category = %q, want %q", got.Category, "observation")
+	}
+}
+
+func TestS7RenameInResult(t *testing.T) {
+	const wantName = "Process reachability"
+	defer installFakeNodes(t, []nodes.Node{
+		{User: "hermes", Host: "claw1.local"},
+	})()
+	defer installFakeDial(t, &fakeSSHRunner{stdout: "  1 launchd\n", exit: 0}, nil)()
+	r := runS7(context.Background(), Options{})
+	if r.Name != wantName {
+		t.Errorf("runS7 Result.Name = %q, want %q", r.Name, wantName)
+	}
+}
