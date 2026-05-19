@@ -19,7 +19,7 @@
 // `update`), which means the Go runner can call internal/* packages
 // directly and skip the os/exec round-trip. The handful of scenarios whose
 // underlying script has NOT been ported yet (S6 drift-diff, S7 process
-// inventory, S8 dotfile drift) degrade to a SKIP with an explicit "not yet
+// reachability, S8 dotfile drift) degrade to a SKIP with an explicit "not yet
 // ported" message rather than shelling out to the bash original; that
 // keeps this package single-language and avoids spawning hidden bash
 // subprocesses from the fleetctl binary.
