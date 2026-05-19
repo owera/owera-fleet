@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/owera/owera-fleet/internal/healthdiff"
 	"github.com/owera/owera-fleet/internal/nodes"
 	osh "github.com/owera/owera-fleet/internal/ssh"
 	"github.com/owera/owera-fleet/internal/state"
@@ -335,13 +336,19 @@ func runS5(ctx context.Context, opts Options) Result {
 
 // --- S6: drift detection ---------------------------------------------------
 //
-// The bash original ran fleet-health-diff.sh between two consecutive
-// snapshots. A Go-native diff is being migrated in a parallel branch
-// (`feat/fleetctl-health-diff`); until that lands this scenario degrades
-// to a "synthetic-diff" sanity check: collect a snapshot twice and
-// confirm the same registered nodes show up both times. That preserves
-// "drift detection workflow is wired" coverage without importing the
-// parallel branch's package.
+// Collects two consecutive snapshots via stateCollectorFn, converts each
+// to a healthdiff.Snapshot, and runs internal/healthdiff.Diff to classify
+// every per-host field change. The scenario result is driven by
+// Report.MaxSeverity():
+//
+//	SeverityCrit              → FAIL (probe started failing, host vanished)
+//	SeverityWarn              → WARN (heartbeat going stale, disk creep,
+//	                                  brew/mem drift)
+//	SeverityInfo / no changes → PASS
+//
+// Successive Collect() calls in a healthy fleet should produce a Report
+// with TotalChanges == 0; only operationally interesting drift surfaces
+// as a non-PASS result.
 
 func runS6(ctx context.Context, opts Options) Result {
 	r := Result{ID: "S6", Name: "Drift detection", Category: "observation"}
@@ -356,22 +363,119 @@ func runS6(ctx context.Context, opts Options) Result {
 		r.Status, r.Message = StatusFail, "second snapshot: "+err.Error()
 		return r
 	}
-	if len(first.Nodes) != len(second.Nodes) {
-		r.Status, r.Message = StatusWarn,
-			fmt.Sprintf("snapshot node count changed: %d -> %d", len(first.Nodes), len(second.Nodes))
-		return r
-	}
-	// Confirm at least one launchd row collected — the bash original's
-	// diff key set ('classification', 'changes', 'stable') was emitted
-	// when launchd state was present.
-	if len(first.LaunchAgents) == 0 && len(second.LaunchAgents) == 0 {
-		r.Status, r.Message = StatusWarn, "no launch agents in either snapshot"
-		return r
-	}
-	r.Status, r.Message = StatusPass,
-		fmt.Sprintf("two snapshots collected, %d nodes / %d launch agents stable",
-			len(first.Nodes), len(first.LaunchAgents))
+	report := healthdiff.Diff(stateSnapshotToHealthdiff(first), stateSnapshotToHealthdiff(second))
+	r.Status = statusForSeverity(report.MaxSeverity())
+	r.Message = formatDriftMessage(report)
 	return r
+}
+
+// stateSnapshotToHealthdiff projects the subset of *state.Snapshot
+// fields that healthdiff cares about (host presence + heartbeat status +
+// gateway-level pinned-version / hermes-dir) into a healthdiff.Snapshot.
+//
+// We don't expand state.Snapshot's API: the conversion lives here at the
+// call site because S6 is the only consumer today. Fields that change on
+// every collection (e.g. Snapshot.Generated, log mod times) are
+// deliberately excluded so a stable fleet produces TotalChanges == 0.
+//
+// Mapping rationale:
+//
+//   - Each state.NodeRow becomes one worker Host. probe_status is "ok"
+//     for every wrapped node (the row only exists if nodes.txt parsing
+//     succeeded); heartbeat_status mirrors the bash port's bucketisation
+//     ("fresh" / "stale-60s" / "stale-300s" / "missing"). Missing nodes
+//     between snapshots therefore surface as host_added / host_removed
+//     diff records — which healthdiff classifies as crit / info.
+//
+//   - The gateway gets its own pseudo-host so PINNED_VERSION / hermes_dir
+//     drift between collections shows up as a per-field info-level diff.
+func stateSnapshotToHealthdiff(s *state.Snapshot) healthdiff.Snapshot {
+	if s == nil {
+		return healthdiff.Snapshot{}
+	}
+	var hosts []healthdiff.Host
+	gatewayName := s.Hostname
+	if gatewayName == "" {
+		gatewayName = "claw3"
+	}
+	gwFields := map[string]string{"probe_status": "ok"}
+	if s.PinnedVersion != "" {
+		gwFields["pinned_version"] = s.PinnedVersion
+	}
+	if s.HermesDir != "" {
+		gwFields["hermes_dir"] = s.HermesDir
+	}
+	hosts = append(hosts, healthdiff.Host{
+		Name:   "gateway: " + gatewayName,
+		Fields: gwFields,
+	})
+	for _, n := range s.Nodes {
+		fields := map[string]string{"probe_status": "ok"}
+		fields["heartbeat_status"] = heartbeatBucket(n)
+		fields["hostname_full"] = n.Host
+		hosts = append(hosts, healthdiff.Host{
+			Name:   "worker: " + n.String(),
+			Fields: fields,
+		})
+	}
+	return healthdiff.Snapshot{Hosts: hosts}
+}
+
+// heartbeatBucket mirrors internal/healthdiff.parseHeartbeat's enum so the
+// per-host heartbeat_status field uses the same vocabulary that real
+// fleet-health-snapshot markdown parses into.
+func heartbeatBucket(n state.NodeRow) string {
+	if !n.HeartbeatPresent {
+		return "missing"
+	}
+	age := n.HeartbeatAge
+	switch {
+	case age < 60*time.Second:
+		return "fresh"
+	case age < 5*time.Minute:
+		return "stale-60s"
+	default:
+		return "stale-300s"
+	}
+}
+
+// statusForSeverity maps healthdiff's severity → scenario Status.
+//
+// The mapping is the contract called out in owera-fleet#38:
+//
+//	crit → fail (block confidence)
+//	warn → warn (operator-look)
+//	info / "" → pass (no actionable drift)
+func statusForSeverity(sev healthdiff.Severity) Status {
+	switch sev {
+	case healthdiff.SeverityCrit:
+		return StatusFail
+	case healthdiff.SeverityWarn:
+		return StatusWarn
+	}
+	return StatusPass
+}
+
+// formatDriftMessage builds the per-change summary line the scenario
+// surfaces. Empty reports emit "no drift detected"; non-empty reports
+// emit "<N> change(s): <crit>/<warn>/<info>".
+func formatDriftMessage(r healthdiff.Report) string {
+	if r.TotalChanges == 0 {
+		return "no drift detected across two consecutive snapshots"
+	}
+	var crit, warn, info int
+	for _, c := range r.Changes {
+		switch c.Severity {
+		case healthdiff.SeverityCrit:
+			crit++
+		case healthdiff.SeverityWarn:
+			warn++
+		default:
+			info++
+		}
+	}
+	return fmt.Sprintf("%d change(s) detected: %d crit / %d warn / %d info",
+		r.TotalChanges, crit, warn, info)
 }
 
 // --- S7: security/process inventory ----------------------------------------

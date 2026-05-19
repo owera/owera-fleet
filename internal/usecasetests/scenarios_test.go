@@ -292,18 +292,9 @@ func TestS5FailMissingNode(t *testing.T) {
 	}
 }
 
-func TestS6PassStableSnapshots(t *testing.T) {
-	defer installFakeStateCollector(t, &state.Snapshot{
-		Nodes: []state.NodeRow{
-			{Node: nodes.Node{User: "hermes", Host: "claw1.local"}},
-		},
-		LaunchAgents: []state.LaunchAgent{{Label: "com.owera.watchdog", PID: "1234"}},
-	}, nil)()
-	r := runS6(context.Background(), Options{})
-	if r.Status != StatusPass {
-		t.Errorf("S6 status = %s msg = %q, want pass", r.Status, r.Message)
-	}
-}
+// S6 drift-detection tests live at the end of this file (search for
+// "--- S6 drift detection ---") to avoid colliding with a parallel branch
+// that renames runS7 in the same file region.
 
 // --- S7 -------------------------------------------------------------------
 
@@ -499,5 +490,148 @@ func TestCheckLogJSONShape(t *testing.T) {
 	r := checkLog("foo", "/tmp/x.jsonl", time.Hour, now)
 	if !strings.HasPrefix(r.result, "ok(") {
 		t.Errorf("checkLog result = %q, want ok(<age>)", r.result)
+	}
+}
+
+// --- S6 drift detection ---------------------------------------------------
+//
+// Appended at end-of-file rather than co-located with the other Sn blocks
+// to avoid a merge conflict with a parallel branch that renames runS7.
+
+// seqStateProbe returns a different snapshot on each Collect() call so
+// runS6 can exercise the diff path (it makes two consecutive calls).
+// When the script of snaps is exhausted, the last entry is reused.
+type seqStateProbe struct {
+	snaps []*state.Snapshot
+	calls int
+}
+
+func (s *seqStateProbe) Collect(_ context.Context) (*state.Snapshot, error) {
+	idx := s.calls
+	if idx >= len(s.snaps) {
+		idx = len(s.snaps) - 1
+	}
+	s.calls++
+	return s.snaps[idx], nil
+}
+
+func installSeqStateCollector(t *testing.T, snaps ...*state.Snapshot) func() {
+	t.Helper()
+	prev := stateCollectorFn
+	probe := &seqStateProbe{snaps: snaps}
+	stateCollectorFn = func(_ string) StateProbe { return probe }
+	return func() { stateCollectorFn = prev }
+}
+
+func TestS6PassNoDrift(t *testing.T) {
+	// Two identical snapshots → healthdiff.Report.TotalChanges == 0
+	// → MaxSeverity == "" → PASS.
+	snap := &state.Snapshot{
+		Hostname:      "claw3",
+		PinnedVersion: "v0.13.0",
+		Nodes: []state.NodeRow{
+			{
+				Node:             nodes.Node{User: "hermes", Host: "claw1.local"},
+				HeartbeatPresent: true,
+				HeartbeatAge:     5 * time.Second,
+			},
+		},
+		LaunchAgents: []state.LaunchAgent{{Label: "com.owera.watchdog", PID: "1234"}},
+	}
+	defer installSeqStateCollector(t, snap, snap)()
+	r := runS6(context.Background(), Options{})
+	if r.Status != StatusPass {
+		t.Errorf("S6 status = %s msg = %q, want pass", r.Status, r.Message)
+	}
+	if !strings.Contains(r.Message, "no drift") {
+		t.Errorf("S6 message = %q, want 'no drift' substring", r.Message)
+	}
+}
+
+func TestS6FailHostRemoved(t *testing.T) {
+	// A worker present in the first snapshot disappears in the second →
+	// healthdiff emits a host_removed change with SeverityCrit → FAIL.
+	first := &state.Snapshot{
+		Hostname: "claw3",
+		Nodes: []state.NodeRow{
+			{
+				Node:             nodes.Node{User: "hermes", Host: "claw1.local"},
+				HeartbeatPresent: true,
+				HeartbeatAge:     5 * time.Second,
+			},
+			{
+				Node:             nodes.Node{User: "hermes", Host: "claw2.local"},
+				HeartbeatPresent: true,
+				HeartbeatAge:     5 * time.Second,
+			},
+		},
+	}
+	second := &state.Snapshot{
+		Hostname: "claw3",
+		Nodes: []state.NodeRow{
+			{
+				Node:             nodes.Node{User: "hermes", Host: "claw1.local"},
+				HeartbeatPresent: true,
+				HeartbeatAge:     5 * time.Second,
+			},
+		},
+	}
+	defer installSeqStateCollector(t, first, second)()
+	r := runS6(context.Background(), Options{})
+	if r.Status != StatusFail {
+		t.Errorf("S6 status = %s msg = %q, want fail (host removed → crit)", r.Status, r.Message)
+	}
+	if !strings.Contains(r.Message, "crit") {
+		t.Errorf("S6 message = %q, want 'crit' substring", r.Message)
+	}
+}
+
+func TestS6WarnHeartbeatStale(t *testing.T) {
+	// Same node in both snapshots but heartbeat moves from fresh to
+	// stale-300s → healthdiff per-field "heartbeat_status" change with
+	// SeverityWarn → WARN.
+	first := &state.Snapshot{
+		Hostname: "claw3",
+		Nodes: []state.NodeRow{
+			{
+				Node:             nodes.Node{User: "hermes", Host: "claw1.local"},
+				HeartbeatPresent: true,
+				HeartbeatAge:     5 * time.Second,
+			},
+		},
+	}
+	second := &state.Snapshot{
+		Hostname: "claw3",
+		Nodes: []state.NodeRow{
+			{
+				Node:             nodes.Node{User: "hermes", Host: "claw1.local"},
+				HeartbeatPresent: true,
+				HeartbeatAge:     10 * time.Minute,
+			},
+		},
+	}
+	defer installSeqStateCollector(t, first, second)()
+	r := runS6(context.Background(), Options{})
+	if r.Status != StatusWarn {
+		t.Errorf("S6 status = %s msg = %q, want warn (heartbeat drift)", r.Status, r.Message)
+	}
+	if !strings.Contains(r.Message, "warn") {
+		t.Errorf("S6 message = %q, want 'warn' substring", r.Message)
+	}
+}
+
+func TestS6FailFirstSnapshotError(t *testing.T) {
+	// First Collect() error → FAIL with stable message prefix.
+	prev := stateCollectorFn
+	stateCollectorFn = func(_ string) StateProbe {
+		return &fakeStateProbe{err: errors.New("probe down")}
+	}
+	defer func() { stateCollectorFn = prev }()
+	r := runS6(context.Background(), Options{})
+	if r.Status != StatusFail {
+		t.Errorf("S6 status = %s, want fail", r.Status)
+	}
+	if !strings.Contains(r.Message, "first snapshot") {
+		t.Errorf("S6 message = %q, want 'first snapshot' substring", r.Message)
 	}
 }
