@@ -34,7 +34,7 @@ func DefaultScenarios() []Scenario {
 		{ID: "S4", Name: "Topic research", Category: "research", Run: runS4},
 		{ID: "S5", Name: "Fleet health audit", Category: "observation", Run: runS5},
 		{ID: "S6", Name: "Drift detection", Category: "observation", Run: runS6},
-		{ID: "S7", Name: "Security/process inventory", Category: "observation", Run: runS7},
+		{ID: "S7", Name: "Process reachability", Category: "observation", Run: runS7},
 		{ID: "S8", Name: "Dotfile drift", Category: "observation", Run: runS8},
 		{ID: "S9", Name: "Version-upgrade dry-run", Category: "lifecycle", Run: runS9},
 		{ID: "S10", Name: "Overnight resilience", Category: "resilience", Run: runS10},
@@ -374,10 +374,19 @@ func runS6(ctx context.Context, opts Options) Result {
 	return r
 }
 
-// --- S7: security/process inventory ----------------------------------------
+// --- S7: process reachability ----------------------------------------------
+//
+// Honest scope: SSH connectivity smoke + lightweight process list across
+// all nodes. The bash original (fleet-process-inventory.sh) captured a
+// richer baseline via ps + lsof + launchctl; that broader security
+// inventory was lifted out to a future dedicated fleetctl
+// security-inventory skill rather than reconstituted here. See issue #39
+// for the rename rationale.
 
 func runS7(ctx context.Context, opts Options) Result {
-	r := Result{ID: "S7", Name: "Security/process inventory", Category: "observation"}
+	// Note: broader security baseline (lsof + launchctl) lifted out to a
+	// dedicated fleetctl security-inventory skill; see issue #39.
+	r := Result{ID: "S7", Name: "Process reachability", Category: "observation"}
 	reg, err := nodesLoadFn()
 	if err != nil {
 		r.Status, r.Message = StatusFail, "nodes.txt: "+err.Error()
@@ -392,11 +401,10 @@ func runS7(ctx context.Context, opts Options) Result {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	// fleet-process-inventory.sh queries ps + lsof + launchctl on each
-	// worker. We mirror that with a single lightweight ssh round-trip
-	// per worker that captures the three signals (it is intentionally
-	// less verbose than the bash version's full report — the parity
-	// claim is "covers every node", not "byte-identical output").
+	// Lightweight ssh round-trip per worker: connectivity probe plus a
+	// truncated `ps -A` capture. Intentionally narrower than the bash
+	// original's ps + lsof + launchctl report — for a full security
+	// baseline diff, use the (future) fleetctl security-inventory skill.
 	covered := 0
 	missing := make([]string, 0, len(all))
 	for _, n := range all {
