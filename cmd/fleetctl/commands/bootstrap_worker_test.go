@@ -34,6 +34,7 @@ func resetBWFlags() {
 	bwSkipTirith = false
 	bwSkipHeartbeat = false
 	bwHeartbeatWaitSec = bwDefaultHeartbeatWait
+	bwHermesUID = bwDefaultHermesUID
 }
 
 // TestPhasesDefault_TenInOrder asserts the canonical phase list is
@@ -139,6 +140,38 @@ func TestBuildPhasePrep_ArgShape(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildPhasePrep_HermesUID confirms that --uid is omitted from
+// phase02 args when it matches the default (so existing call sites
+// stay byte-identical), and propagates as "--uid N" when overridden.
+// Motivation: claw-staging.local already had its admin account on
+// UID 502, so hermes had to land at 503; phase02's underlying script
+// has supported --uid since wave-9, but the runner never plumbed it.
+func TestBuildPhasePrep_HermesUID(t *testing.T) {
+	resetBWFlags()
+	defer resetBWFlags()
+
+	// Default UID: omitted from args.
+	prep, err := buildPhasePrep("phase02_create_user.sh", "u@h", "")
+	if err != nil {
+		t.Fatalf("default-uid: %v", err)
+	}
+	if strings.Contains(strings.Join(prep.args, " "), "--uid") {
+		t.Errorf("default UID should not emit --uid (got: %v)", prep.args)
+	}
+
+	// Override UID: propagates as "--uid 503".
+	resetBWFlags()
+	bwHermesUID = 503
+	prep, err = buildPhasePrep("phase02_create_user.sh", "u@h", "")
+	if err != nil {
+		t.Fatalf("override-uid: %v", err)
+	}
+	joined := strings.Join(prep.args, " ")
+	if !strings.Contains(joined, "--uid 503") {
+		t.Errorf("override UID not in args (got: %s)", joined)
 	}
 }
 

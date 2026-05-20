@@ -29,6 +29,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,6 +60,7 @@ var (
 	bwSkipTirith       bool
 	bwSkipHeartbeat    bool
 	bwHeartbeatWaitSec int
+	bwHermesUID        int
 )
 
 const (
@@ -69,6 +71,7 @@ const (
 	bwDefaultPlistTemplate   = "templates/com.hermes.heartbeat.plist"
 	bwDefaultHeartbeatWait   = 70
 	bwDefaultHermesUser      = "hermes"
+	bwDefaultHermesUID       = 502
 )
 
 // phaseList is the canonical ordered list of phase scripts.
@@ -146,6 +149,8 @@ func init() {
 		"skip phase08 heartbeat install (phase09 also skips its heartbeat probe)")
 	bootstrapWorkerCmd.Flags().IntVar(&bwHeartbeatWaitSec, "heartbeat-wait-seconds", bwDefaultHeartbeatWait,
 		"how long phase08 waits for the first heartbeat tick")
+	bootstrapWorkerCmd.Flags().IntVar(&bwHermesUID, "uid", bwDefaultHermesUID,
+		"UID for the hermes service account on the worker (phase02). Override when the default UID is occupied by another account on the target host (e.g. claw-staging where 502 was taken).")
 
 	rootCmd.AddCommand(bootstrapWorkerCmd)
 }
@@ -380,6 +385,9 @@ func buildPhasePrep(phase, nodeLabel, pinnedVersion string) (phasePrep, error) {
 		args := append([]string{}, common...)
 		if bwAllowExistAdmin {
 			args = append(args, "--allow-existing-admin-user")
+		}
+		if bwHermesUID != bwDefaultHermesUID {
+			args = append(args, "--uid", strconv.Itoa(bwHermesUID))
 		}
 		return phasePrep{args: args}, nil
 
@@ -745,6 +753,7 @@ func bootstrapWorkerSkill() Skill {
 			{Name: "--skip-tirith", Description: "Skip phase07 + phase09 tirith probe."},
 			{Name: "--skip-heartbeat", Description: "Skip phase08 + phase09 heartbeat probe."},
 			{Name: "--heartbeat-wait-seconds N", Description: "First-heartbeat wait window (phase08)."},
+			{Name: "--uid N", Description: "UID for the hermes service account (phase02). Default 502; override when occupied on target."},
 			{Name: "--dry-run", Description: "Pass --dry-run to phase scripts (probe only, no mutations)."},
 			{Name: "--timeout DUR", Description: "Per-phase timeout (default 10m)."},
 			{Name: "--quiet", Description: "Suppress stdout; JSONL log still written."},
