@@ -277,6 +277,12 @@ const MaxCapturedStderr = 4096
 // Dial opens a connection to t with the dialer's effective config plus
 // any per-call Options. Per-call Options shadow defaults but do not
 // mutate the dialer.
+//
+// Name resolution for non-literal targets goes through [Dialer.dialFiltered],
+// which filters link-local candidates (#42) and tolerates the residual
+// intermittent ULA-only resolver responses documented on that method
+// (#44). Callers should expect occasional transient dial failures on
+// .local mDNS hosts and retry on their own cadence.
 func (d *Dialer) Dial(ctx context.Context, t Target, opts ...Option) (*Client, error) {
 	cfg := d.cfg
 	for _, o := range opts {
@@ -351,6 +357,25 @@ func (d *Dialer) Dial(ctx context.Context, t Target, opts ...Option) (*Client, e
 // Literal IP addresses (no resolver round-trip) and addresses that
 // fail to parse as host:port are passed through to the underlying
 // dialer untouched — they're operator-supplied, not resolver-stale.
+//
+// # Residual: ULA-only resolver responses (#44)
+//
+// On darwin's cgo resolver path, .local mDNS lookups intermittently
+// return only the IPv6 ULA address (fd00::/8) for a host even when the
+// system normally has IPv4 + global IPv6 + ULA candidates (dscacheutil
+// returns the full set on the same lookup). When that happens
+// dialFiltered has only the ULA to try; if the LAN doesn't route ULA
+// (a common misconfiguration), the dial fails and the caller must
+// retry on its own schedule.
+//
+// Long-running daemons (heartbeats-bridge) self-heal within one poll
+// cycle (~60s) because the resolver typically returns a fuller answer
+// next time, and the watchdog's stale-heartbeat threshold (5min) gives
+// plenty of margin before any alert. If the failure rate ever becomes
+// operationally annoying, revisit owera-fleet issue #44 — it
+// enumerates four alternative fixes (force pure-Go resolver, filter
+// ULA, intra-poll re-resolve, parallel happy-eyeballs). The current
+// posture is Option E: accept + document.
 func (d *Dialer) dialFiltered(ctx context.Context, network, addr string, cfg Config) (net.Conn, error) {
 	if cfg.AllowLinkLocal {
 		return d.dialContext(ctx, network, addr)
