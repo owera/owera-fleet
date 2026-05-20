@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hermes.heartbeat</string>
+    <key>UserName</key>
+    <string>hermes</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>mkdir -p {{HERMES_HOME}}/.hermes/heartbeat; date +%s &gt; {{HERMES_HOME}}/.hermes/heartbeat/{{NODE_LABEL}}</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>{{HERMES_HOME}}/.hermes/heartbeat/launchd.err</string>
+    <key>StandardOutPath</key>
+    <string>{{HERMES_HOME}}/.hermes/heartbeat/launchd.out</string>
+</dict>
+</plist>
