@@ -179,7 +179,6 @@ run_installer() {
   fi
 
   installer='curl -fsSL '"$INSTALL_URL"' | HERMES_VERSION='"$PINNED_VERSION"' bash -s -- --skip-setup'
-  # Use printf to feed sh -c via -i sub-shell to avoid quoting headaches.
   # shellcheck disable=SC2016  # literal $HOME / $PATH must reach the remote sh.
   remote_cmd='set -e
 '"$installer"'
@@ -198,8 +197,23 @@ xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
     return 1
   }
 
-  sudo -u "$HERMES_USER" -i sh -c "$remote_cmd" >/dev/null 2> "$tmp_err"
+  # Earlier form used `sudo -u hermes -i sh -c "$remote_cmd"`, but sudo's
+  # -i shell-escapes the command argument, which collapsed the embedded
+  # newlines into a single line — `set -e` ran into `curl ...` producing
+  # `set -ecurl ...` and a syntax error. Fix: stage the multi-line script
+  # as a temp file readable by hermes and invoke it. Discovered on first
+  # live C1 run against claw-staging.local on 2026-05-20.
+  tmp_script=$(mktemp -t phase03-installXXXXXX.sh) || {
+    rm -f "$tmp_err"
+    log_action "hermes_installer" "error" 0 "mktemp (script) failed"
+    return 1
+  }
+  printf '%s' "$remote_cmd" > "$tmp_script"
+  chmod 755 "$tmp_script"
+
+  sudo -u "$HERMES_USER" -i bash "$tmp_script" >/dev/null 2> "$tmp_err"
   rc=$?
+  rm -f "$tmp_script"
   end=$(now_ms); dur=$((end - start))
   tail=$(tail -c 1500 "$tmp_err" 2>/dev/null)
   rm -f "$tmp_err"

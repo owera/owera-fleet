@@ -181,13 +181,34 @@ probe_existing() {
   return 0
 }
 
+# Read a single dscl attribute, handling both output forms macOS dscl emits:
+#   single-line:  "KEY: value"
+#   continuation: "KEY:\n value" (header line, then value indented on line 2,
+#                  used when the value contains spaces or other shell-special
+#                  characters)
+# The old form `awk '{print $2}'` worked for single-line single-word values
+# only — multi-word RealName ("Hermes Agent") tokenized to just "Agent",
+# breaking idempotency on every re-run. Discovered on first live C1 against
+# claw-staging.local on 2026-05-20.
+read_dscl_attr() {
+  # read_dscl_attr USER KEY
+  local user="$1" key="$2"
+  dscl . -read "/Users/${user}" "${key}" 2>/dev/null | awk -v k="${key}:" '
+    NR==1 {
+      if ($0 == k) { next }                  # continuation form: skip header
+      sub("^" k " *", ""); print; exit       # single-line form: strip prefix
+    }
+    NR>=2 { sub(/^[[:space:]]+/, ""); print; exit }  # continuation value line
+  '
+}
+
 # Apply each dscl attribute, skipping the underlying command when it
 # already reports the desired value. Returns 0 on success, 1 on failure.
 apply_dscl_attr() {
   # apply_dscl_attr KEY VALUE
   local key="$1" want="$2" cur start end dur
   start=$(now_ms)
-  cur=$(dscl . -read "/Users/${HERMES_USER}" "$key" 2>/dev/null | awk '{print $2}')
+  cur=$(read_dscl_attr "${HERMES_USER}" "$key")
   if [ "$cur" = "$want" ]; then
     end=$(now_ms); dur=$((end - start))
     log_action "dscl_${key}" "no-change" "$dur" "${key}=${want}"

@@ -452,13 +452,36 @@ func isFilteredIP(ip net.IP) bool {
 // expose it as a tiny shim so the dial loop reads top-to-bottom.
 func ipWithZone(ip net.IPAddr) string { return ip.String() }
 
-// Run executes cmd remotely, returning structured Stdout/Stderr/ExitCode.
+// RunOpts configures optional inputs for [Client.RunWith]. The zero
+// value means: no stdin attached, behave exactly like [Client.Run].
+type RunOpts struct {
+	// Stdin, if non-nil, is wired to the remote session's stdin before
+	// the command runs. Callers must ensure the reader returns EOF;
+	// otherwise the session will block until the remote command exits
+	// on its own.
+	Stdin io.Reader
+}
+
+// Run executes cmd remotely with no stdin attached, returning structured
+// Stdout/Stderr/ExitCode. See [Client.RunWith] for stdin-supplying form.
 //
 // Stderr is captured up to [MaxCapturedStderr] from the tail (newest
 // bytes preserved). A non-zero exit code is *not* an error — callers
 // check Result.ExitCode for that and reserve err for transport problems
 // (network, signal, malformed reply).
 func (c *Client) Run(ctx context.Context, cmd string) (Result, error) {
+	return c.RunWith(ctx, cmd, RunOpts{})
+}
+
+// RunWith executes cmd remotely with optional inputs from opts. When
+// opts.Stdin is non-nil it is attached to the remote session's stdin
+// before the command runs — useful for "cat > file" style uploads
+// where the file payload must arrive over the SSH channel rather than
+// being inlined into the command string.
+//
+// All other semantics match [Client.Run]: structured Result, tail-only
+// stderr capture, ctx-cancellation via SIGTERM.
+func (c *Client) RunWith(ctx context.Context, cmd string, opts RunOpts) (Result, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -477,6 +500,9 @@ func (c *Client) Run(ctx context.Context, cmd string) (Result, error) {
 	sess.Stdout = &stdout
 	tail := newTailWriter(MaxCapturedStderr)
 	sess.Stderr = io.MultiWriter(&stderr, tail)
+	if opts.Stdin != nil {
+		sess.Stdin = opts.Stdin
+	}
 
 	done := make(chan error, 1)
 	go func() { done <- sess.Run(cmd) }()

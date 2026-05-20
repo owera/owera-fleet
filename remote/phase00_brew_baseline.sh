@@ -225,26 +225,48 @@ ensure_local_env_dir() {
 # Append a brew shellenv eval to ~/.local/bin/env if it isn't already
 # there. The file is sourced by delegated-command wrappers so brew lands
 # on PATH for non-login shells.
+#
+# Also ensures ~/.local/bin itself is on PATH. The hermes installer
+# (phase03) places a wrapper at ~/.local/bin/hermes; without this guard,
+# `command -v hermes` fails post-install even though the binary exists.
+# Discovered on first live C1 run against claw-staging.local 2026-05-20.
 ensure_shellenv() {
-  local env_file start end dur
+  local env_file start end dur missing_brew missing_localbin
   env_file="$HOME/.local/bin/env"
   start=$(now_ms)
-  if [ -f "$env_file" ] && grep -q "brew shellenv" "$env_file" 2>/dev/null; then
+
+  missing_brew=0
+  missing_localbin=0
+  if [ ! -f "$env_file" ] || ! grep -q "brew shellenv" "$env_file" 2>/dev/null; then
+    missing_brew=1
+  fi
+  if [ ! -f "$env_file" ] || ! grep -q '\.local/bin' "$env_file" 2>/dev/null; then
+    missing_localbin=1
+  fi
+
+  if [ "$missing_brew" -eq 0 ] && [ "$missing_localbin" -eq 0 ]; then
     end=$(now_ms); dur=$((end - start))
-    log_action "shellenv_wired" "no-change" "$dur" "$env_file already evals brew shellenv"
+    log_action "shellenv_wired" "no-change" "$dur" "$env_file already wires brew shellenv + .local/bin PATH"
     return 0
   fi
   end=$(now_ms); dur=$((end - start))
   if [ "$DRY_RUN" = "true" ]; then
-    log_action "shellenv_wired" "skipped" "$dur" "dry-run: would append brew shellenv to $env_file"
+    log_action "shellenv_wired" "skipped" "$dur" "dry-run: would append missing pieces to $env_file (missing_brew=$missing_brew missing_localbin=$missing_localbin)"
     return 0
   fi
   if {
-    printf '\n# Homebrew shellenv (added by phase00_brew_baseline.sh on %s)\n' "$(_iso_now)"
-    # shellcheck disable=SC2016 # literal $(...) is what we want written.
-    printf 'eval "$(%s shellenv)"\n' "$BREW_PATH"
+    if [ "$missing_localbin" -eq 1 ]; then
+      printf '\n# .local/bin PATH guard (added by phase00_brew_baseline.sh on %s)\n' "$(_iso_now)"
+      # shellcheck disable=SC2016 # literal $HOME / $PATH must reach the runtime sh.
+      printf 'case ":${PATH}:" in\n    *":${HOME}/.local/bin:"*) ;;\n    *) export PATH="${HOME}/.local/bin:${PATH}" ;;\nesac\n'
+    fi
+    if [ "$missing_brew" -eq 1 ]; then
+      printf '\n# Homebrew shellenv (added by phase00_brew_baseline.sh on %s)\n' "$(_iso_now)"
+      # shellcheck disable=SC2016 # literal $(...) is what we want written.
+      printf 'eval "$(%s shellenv)"\n' "$BREW_PATH"
+    fi
   } >> "$env_file" 2>/dev/null; then
-    log_action "shellenv_wired" "ok" "$dur" "appended brew shellenv to $env_file"
+    log_action "shellenv_wired" "ok" "$dur" "appended to $env_file (brew=$missing_brew localbin=$missing_localbin)"
     return 0
   fi
   log_action "shellenv_wired" "error" "$dur" "could not append to $env_file"

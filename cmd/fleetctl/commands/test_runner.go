@@ -26,6 +26,7 @@ var (
 	testQuiet       bool
 	testJSON        bool
 	testTimeout     time.Duration
+	testNode        string
 	testLogPath     = "~/.hermes/logs/test.jsonl"
 )
 
@@ -75,6 +76,11 @@ func init() {
 	testCmd.Flags().BoolVar(&testQuiet, "quiet", false, "suppress per-step output; JSONL log still written")
 	testCmd.Flags().BoolVar(&testJSON, "json", false, "emit JSON result per scenario to stdout")
 	testCmd.Flags().DurationVar(&testTimeout, "timeout", 5*time.Minute, "per-step timeout")
+	testCmd.Flags().StringVar(&testNode, "node", "",
+		"override the ${NODE} variable in scenarios (e.g. hermes@claw-staging.local). "+
+			"Scopes any node-fanning scenario step to a single worker so staging-only "+
+			"C2 runs don't drag production nodes in. When unset, scenarios use whatever "+
+			"vars.NODE the YAML provides (typically a fleet-wide default).")
 	rootCmd.AddCommand(testCmd)
 }
 
@@ -153,9 +159,18 @@ func runScenario(ctx context.Context, s *scenarios.Scenario) ScenarioResult {
 	res := ScenarioResult{Scenario: s}
 	start := time.Now()
 
+	// If --node was passed, inject it as a ${NODE} override that takes
+	// precedence over any vars.NODE the scenario YAML provides. Lets
+	// "fleetctl test --tier 3 --node hermes@claw-staging.local" scope
+	// the gauntlet to staging without editing nodes.txt or YAML files.
+	var overrides map[string]string
+	if testNode != "" {
+		overrides = map[string]string{"NODE": testNode}
+	}
+
 	for _, step := range s.Steps {
 		stepCtx, cancel := context.WithTimeout(ctx, testTimeout)
-		cmd := s.ExpandVars(step.Run, nil)
+		cmd := s.ExpandVars(step.Run, overrides)
 		stepStart := time.Now()
 		stdout, stderr, exit, _ := stepRunner(stepCtx, cmd)
 		cancel()

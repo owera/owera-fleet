@@ -18,6 +18,7 @@ func resetTestFlags() {
 	testQuiet = true
 	testJSON = false
 	testTimeout = 0
+	testNode = ""
 }
 
 func writeScenarioYAML(t *testing.T, dir, name, content string) {
@@ -184,6 +185,45 @@ func TestTestRunnerNoScenarios(t *testing.T) {
 
 	if err := runTest(testCmd, nil); err == nil {
 		t.Fatal("expected error for empty scenarios dir, got nil")
+	}
+}
+
+// TestTestRunnerNodeFlagOverridesNodeVar confirms that --node overrides
+// any vars.NODE the scenario YAML provides. Motivation: scoping a tier-3
+// C2 run to staging only (`fleetctl test --tier 3 --node hermes@claw-staging.local`)
+// without editing nodes.txt or YAML files.
+func TestTestRunnerNodeFlagOverridesNodeVar(t *testing.T) {
+	resetTestFlags()
+	defer resetTestFlags()
+
+	scenDir := t.TempDir()
+	writeScenarioYAML(t, scenDir, "node.yaml",
+		"name: node-echo\ntier: 1\ndescription: x\nvars:\n  NODE: hermes@claw1.local\nsteps:\n  - name: echo-node\n    run: echo ${NODE}\n    expect:\n      exit: 0\n      stdout_contains: hermes@claw-staging.local\n")
+	testScenariosDir = scenDir
+	testNode = "hermes@claw-staging.local"
+
+	var seen string
+	prev := stepRunner
+	stepRunner = func(_ context.Context, cmd string) (string, string, int, error) {
+		seen = cmd
+		// Echo back the ${NODE}-substituted output so stdout_contains passes.
+		return "hermes@claw-staging.local\n", "", 0, nil
+	}
+	defer func() { stepRunner = prev }()
+
+	logDir := t.TempDir()
+	prevLog := testLogPath
+	testLogPath = filepath.Join(logDir, "test.jsonl")
+	defer func() { testLogPath = prevLog }()
+
+	if err := runTest(testCmd, nil); err != nil {
+		t.Fatalf("runTest: %v", err)
+	}
+	if !strings.Contains(seen, "claw-staging.local") {
+		t.Errorf("expected stepRunner to receive override (claw-staging.local); saw cmd=%q", seen)
+	}
+	if strings.Contains(seen, "claw1.local") {
+		t.Errorf("expected override to win; vars.NODE leaked into cmd=%q", seen)
 	}
 }
 
