@@ -120,6 +120,11 @@ type Config struct {
 	AgentSocket         string
 	KeyFile             string
 	KeyPassphrase       []byte
+
+	// AllowLinkLocal disables the default behavior of filtering IPv6
+	// link-local (fe80::/10) and site-local (fec0::/10) addresses out
+	// of resolver results before dialing. See [WithAllowLinkLocal].
+	AllowLinkLocal bool
 }
 
 // Option mutates a Config; used in variadic Dial/Run calls.
@@ -171,13 +176,33 @@ func WithKeyFile(path string, passphrase []byte) Option {
 	}
 }
 
+// WithAllowLinkLocal disables the default IPv6 link-local / site-local
+// filter applied to resolver results before dialing. The filter exists
+// to avoid the long-running-daemon failure mode in issue #42, where a
+// stale fe80:: neighbor cache entry kept the heartbeats-bridge dialing
+// an unreachable address for hours. Production callers should leave the
+// filter on; tests and unusual topologies (single-segment IPv6 link
+// where workers really are addressed via fe80::) may opt out.
+func WithAllowLinkLocal() Option {
+	return func(c *Config) { c.AllowLinkLocal = true }
+}
+
+// resolverFunc resolves a hostname to a slice of [net.IPAddr]. It
+// matches the signature of [net.Resolver.LookupIPAddr] so tests can
+// inject fakes without poking the network.
+type resolverFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
+
 // Dialer is the typed entry point. Construct one per session; concurrent
 // Dial calls are safe.
 type Dialer struct {
 	cfg Config
 
-	// dialContext exists for tests; production wraps net.Dial.
+	// dialContext exists for tests; production wraps net.Dial. It is
+	// invoked once per filtered IP candidate from [Dialer.dialFiltered].
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// resolver exists for tests; production wraps net.DefaultResolver.
+	// LookupIPAddr. See [resolverFunc] for the signature.
+	resolver resolverFunc
 	// resolveHome exists for tests.
 	resolveHome func() (string, error)
 	// agentLookup exists for tests; production opens SSH_AUTH_SOCK.
@@ -203,6 +228,9 @@ func NewDialer(opts ...Option) *Dialer {
 		dialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, network, addr)
+		},
+		resolver: func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			return net.DefaultResolver.LookupIPAddr(ctx, host)
 		},
 		resolveHome: os.UserHomeDir,
 		agentLookup: openAgent,
@@ -278,7 +306,7 @@ func (d *Dialer) Dial(ctx context.Context, t Target, opts ...Option) (*Client, e
 	dialCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
 	defer cancel()
 
-	rawConn, err := d.dialContext(dialCtx, "tcp", t.Address())
+	rawConn, err := d.dialFiltered(dialCtx, "tcp", t.Address(), cfg)
 	if err != nil {
 		if agentCloser != nil {
 			_ = agentCloser.Close()
@@ -306,6 +334,98 @@ func (d *Dialer) Dial(ctx context.Context, t Target, opts ...Option) (*Client, e
 	}
 	return client, nil
 }
+
+// dialFiltered resolves addr to its IP candidates, filters out IPv6
+// link-local (fe80::/10) and site-local (fec0::/10) entries unless
+// cfg.AllowLinkLocal is set, and dials the survivors in resolver order
+// until one succeeds. Returns a clear "no non-link-local address"
+// error when every resolver result was filtered out — operators can
+// grep logs for "link-local" to attribute the failure mode in #42.
+//
+// The filter exists because Go's resolver (cgo getaddrinfo on darwin)
+// returns stale fe80:: entries for .local mDNS hostnames after the
+// neighbor cache rotates, and a long-running process holds onto them
+// forever. Filtering up front means recovery is automatic on the next
+// dial instead of requiring a process restart.
+//
+// Literal IP addresses (no resolver round-trip) and addresses that
+// fail to parse as host:port are passed through to the underlying
+// dialer untouched — they're operator-supplied, not resolver-stale.
+func (d *Dialer) dialFiltered(ctx context.Context, network, addr string, cfg Config) (net.Conn, error) {
+	if cfg.AllowLinkLocal {
+		return d.dialContext(ctx, network, addr)
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Malformed addr — pass through; the underlying dialer will
+		// emit the canonical error.
+		return d.dialContext(ctx, network, addr)
+	}
+
+	// Literal IPs bypass the resolver and the filter. An operator who
+	// explicitly types an fe80:: address knows what they're doing; we
+	// only guard against resolver-supplied staleness.
+	if ip := net.ParseIP(host); ip != nil {
+		return d.dialContext(ctx, network, addr)
+	}
+
+	ips, err := d.resolver(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", host, err)
+	}
+
+	usable := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
+		if isFilteredIP(ip.IP) {
+			continue
+		}
+		usable = append(usable, ip)
+	}
+	if len(usable) == 0 {
+		return nil, fmt.Errorf("no non-link-local address for %s (resolver returned only link-local/site-local addresses; long-running daemon may need a restart if this is a stale neighbor cache — see issue #42)", host)
+	}
+
+	// Iterate candidates in resolver order. The system resolver already
+	// applies its own preference policy (typically IPv4-first when both
+	// are present on darwin); we preserve that ordering. First successful
+	// dial wins; otherwise return the last error so the operator sees
+	// the underlying transport problem, not a generic "all failed".
+	var lastErr error
+	for _, ip := range usable {
+		candidate := net.JoinHostPort(ipWithZone(ip), port)
+		conn, derr := d.dialContext(ctx, network, candidate)
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	return nil, lastErr
+}
+
+// isFilteredIP reports whether ip is an address the dialer should drop
+// before attempting to connect. The set is IPv6 link-local unicast
+// (fe80::/10), IPv6 link-local multicast (ff02::/16 and friends), IPv4
+// link-local (169.254.0.0/16, also covered by IsLinkLocalUnicast), and
+// IPv6 site-local (fec0::/10, formally deprecated by RFC 3879 but still
+// occasionally emitted by misconfigured resolvers; cheap to filter).
+func isFilteredIP(ip net.IP) bool {
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	// fec0::/10: IPv6 site-local. Not covered by IsLinkLocalUnicast.
+	if v6 := ip.To16(); v6 != nil && ip.To4() == nil {
+		if v6[0] == 0xfe && (v6[1]&0xc0) == 0xc0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ipWithZone renders ip's textual form, preserving any IPv6 zone-id
+// (e.g. "fe80::1%en0"). net.IPAddr.String() already does this; we
+// expose it as a tiny shim so the dial loop reads top-to-bottom.
+func ipWithZone(ip net.IPAddr) string { return ip.String() }
 
 // Run executes cmd remotely, returning structured Stdout/Stderr/ExitCode.
 //
