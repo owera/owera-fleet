@@ -59,7 +59,7 @@ Test from the gateway before proceeding to user creation:
 
 ```bash
 ping -c 2 claw-staging.local
-ssh -o ConnectTimeout=5 claw3@claw-staging.local "uname -a"
+ssh -o ConnectTimeout=5 claw-staging@claw-staging.local "uname -a"
 ```
 
 If `claw-staging.local` doesn't resolve, debug mDNS first (`dns-sd -B _ssh._tcp` from the gateway, look for the host).
@@ -68,29 +68,56 @@ If `claw-staging.local` doesn't resolve, debug mDNS first (`dns-sd -B _ssh._tcp`
 
 ## 4. User setup
 
-Two users on staging, matching production:
+Two users on staging:
 
 | User | UID | Role |
 |---|---|---|
-| `claw3` | 501 | Operator account; same as gateway. SSH key from `~/.ssh/operator_ed25519.pub` in `authorized_keys`. |
-| `hermes` | 502 | Service account that Hermes runs as. SSH key from `~/.hermes_ssh_key.pub` in `authorized_keys`. **UID 502 must match production claw1 / claw2** so any cross-host file ownership comparisons are sensible. |
+| `claw-staging` | 502 (as-built by Setup Assistant on first boot) | Admin account. SSH key from gateway's `~/.ssh/operator_ed25519.pub` in `authorized_keys`. **Username differs from the gateway** (gateway operator is `claw3`); the staging Mac uses `claw-staging` so the hostname and admin login match. |
+| `hermes` | **503** | Service account that Hermes runs as. **Unprivileged** (group `staff`, not `admin`). SSH key from gateway's `~/.hermes_ssh_key.pub` in `authorized_keys`. |
 
-Create `hermes` from the gateway side (after SSHing in as `claw3`):
+> **UID 503 footnote.** Production workers (`claw1`/`claw2`) run hermes at UID 502. On staging, the admin account `claw-staging` was created at UID 502 by macOS Setup Assistant (a quirk of this Mac's first-boot setup; the more common pattern is UID 501 for the first user). Re-UID'ing a live admin account is invasive enough that we accepted hermes=503 here instead. The only practical consequence is mild noise in cross-host backup ownership comparison (numeric UIDs differ between `worker-backups/claw1/` at 502 and `worker-backups/claw-staging/` at 503); no script enforces UID 502 and `phase02_create_user.sh` supports `--uid` for exactly this case. Plumbed through `bootstrap-worker` as `--uid` in the same PR that landed this footnote.
+
+First, seed the operator key from the gateway (one password prompt):
 
 ```bash
-# On claw-staging.local (as claw3):
-sudo sysadminctl -addUser hermes -UID 502 -fullName "Hermes service" -password - -admin
-# (prompts for password interactively; use a random one and discard — SSH key is the only login path)
-sudo dseditgroup -o edit -a hermes -t user staff
+# On the gateway:
+ssh-copy-id -i ~/.ssh/operator_ed25519.pub claw-staging@claw-staging.local
+```
 
-# Install Homebrew under hermes (hermes can do this themselves once SSH works,
-# but doing it as claw3 with sudo -u hermes is fine):
+Then create `hermes`. Easiest path: run the canonical `§4` paste-script bundled with the operations workspace (it's idempotent, validates non-admin membership, and primes `sudo -v` so you only enter your password once):
+
+```bash
+# On the gateway — copy the script onto staging:
+scp /Users/claw3/.claude/jobs/<job>/staging-step4-paste.sh \
+    claw-staging@claw-staging.local:/tmp/
+
+# Run it (one password prompt, then ~5-10 min for Homebrew on a fresh Mac):
+ssh -t claw-staging@claw-staging.local 'bash /tmp/staging-step4-paste.sh'
+```
+
+The canonical inline equivalent, for the record:
+
+```bash
+# SSH in as the admin:
+ssh claw-staging@claw-staging.local
+sudo -v                                # one password prompt; refreshes sudo cache
+
+# Create hermes at UID 503 (unprivileged, group staff):
+RANDOM_PW="$(openssl rand -base64 24)"
+sudo sysadminctl -addUser hermes -UID 503 -fullName "Hermes service" -password "$RANDOM_PW"
+unset RANDOM_PW
+sudo dseditgroup -o edit -a hermes -t user staff
+# Verify hermes is NOT in admin (must print "no"):
+dseditgroup -o checkmember -m hermes admin
+
+# Install Homebrew under hermes (phase 00 expects brew on PATH):
 sudo -u hermes -i bash -c '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 
-# Authorize the hermes runtime key:
+# Authorize the hermes runtime key (from the gateway's ~/.hermes_ssh_key.pub):
 sudo mkdir -p /Users/hermes/.ssh
-sudo cp /Users/claw3/.ssh/authorized_keys /Users/hermes/.ssh/authorized_keys  # if staging it from claw3's keys
-# Or paste the hermes-runtime pubkey directly. Verify perms:
+sudo tee /Users/hermes/.ssh/authorized_keys >/dev/null <<'PUBKEY'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOmg3QaNw8AOu4q+hhMqoXi3BePUVBh1hSxmMthutyLC hermes-gateway-claw3
+PUBKEY
 sudo chmod 700 /Users/hermes/.ssh
 sudo chmod 600 /Users/hermes/.ssh/authorized_keys
 sudo chown -R hermes:staff /Users/hermes/.ssh
@@ -100,8 +127,10 @@ Verify from the gateway:
 
 ```bash
 ssh hermes@claw-staging.local "id"
-# expect: uid=502(hermes) gid=20(staff) ...
+# expect: uid=503(hermes) gid=20(staff) ...
 ```
+
+> **Why no `-admin`:** the hermes service account must be unprivileged. `bootstrap-worker`'s phase02 enforces this; pass `--allow-existing-admin-user` only if you have a deliberate reason (and you almost never do).
 
 ---
 
@@ -111,25 +140,28 @@ This is the C1 acceptance criterion. Run from the gateway:
 
 ```bash
 cd ~/owera-fleet
-go run ./cmd/fleetctl bootstrap-worker hermes@claw-staging.local --verbose 2>&1 | tee /tmp/bootstrap-staging.log
+go run ./cmd/fleetctl bootstrap-worker --node hermes@claw-staging.local --uid 503 --verbose \
+  2>&1 | tee /tmp/bootstrap-staging.log
 ```
 
 The 10 phases (00 brew → 09 verify) should complete in 8-15 minutes. Each phase writes a structured JSONL line. The pipeline is idempotent — re-running after a failed phase resumes from the same point.
 
-Per-phase expected behavior:
+> **`--uid 503` rationale:** see §4 UID 503 footnote. Production workers use the runner's default (502); staging needs the override because UID 502 was occupied by the admin account at first boot.
+
+Per-phase expected behavior (matches the wave-9 Go port):
 
 | Phase | What's expected |
 |---|---|
-| 00 brew | Homebrew already installed for `hermes` from §4; phase verifies + installs jq, coreutils, shellcheck, gh, wget, ripgrep |
-| 01 directories | `/Users/hermes/.hermes/{logs,sessions,skills,heartbeat,worker-backups}` created |
-| 02 ssh | Confirms the operator-key path works (already true since you SSH'd to install Homebrew) |
-| 03 hermes-binary | Downloads `hermes` matching `PINNED_VERSION`; idempotent |
-| 04 config | Renders `config.yaml` with terminal sandbox + tirith pinned |
-| 05 skills | rsync agentic-services skills from gateway |
-| 06 heartbeat-launchd | Installs `com.hermes.heartbeat` LaunchDaemon (every 60 s touch) |
-| 07 preflight | Runs `hermes-job-preflight.sh` (version-compat probe) |
-| 08 PINNED_VERSION | Seeds `~/.hermes/PINNED_VERSION` from gateway |
-| 09 verify | Final acceptance: SSH probe, heartbeat presence, version match, version probe |
+| 00 brew_baseline | Homebrew + essentials (`jq coreutils shellcheck gh wget ripgrep`) baseline; phase 00 also installs brew if §4 didn't already |
+| 01 verify_prereqs | `sudo` / `brew` / `xcode-clt` reachable for `hermes` |
+| 02 create_user | `hermes` at UID 503, /bin/zsh, /Users/hermes home, group=staff (NOT admin); reports `no-change` since §4 already created it |
+| 03 install_hermes | Downloads `hermes` matching `PINNED_VERSION` (v0.13.0); seeds `~/.hermes/PINNED_VERSION` |
+| 04 seed_config | Drops `config.yaml` bundle; rewrites `tirith_path` from gateway prefix to `/Users/hermes/.hermes` |
+| 05 distribute_secrets | Installs `.env.gpg` (mode 600) + `run-with-secrets.sh` (mode 700) |
+| 06 setup_dedicated_key | Installs gateway pubkey in `/Users/hermes/.ssh/authorized_keys` (idempotent — §4 already did this) |
+| 07 install_tirith | Best-effort `brew install tirith`, falls back to Hermes-skill path |
+| 08 launchd_heartbeat | Installs `com.hermes.heartbeat` LaunchDaemon (every 60 s touch); waits up to 70 s for first tick |
+| 09 verify | Final acceptance gate: `hermes version` pinned, non-root user, fresh heartbeat. Emits final `verify` JSONL event |
 
 A clean run looks like:
 
