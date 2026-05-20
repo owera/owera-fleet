@@ -164,18 +164,28 @@ var bwOrchestratorFactory = func(target osh.Target, timeout time.Duration) (*boo
 	}
 	return &bootstrap.Orchestrator{
 		Upload: func(ctx context.Context, localPath, remotePath string) error {
-			data, err := os.ReadFile(localPath)
+			f, err := os.Open(localPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("upload %s: %w", localPath, err)
 			}
-			// Write to remote via ssh `cat > <path>`.
-			stdin := strings.NewReader(string(data))
-			_ = stdin
-			_, _, _, err = func() (string, string, int, error) {
-				res, runErr := client.Run(ctx, fmt.Sprintf("cat > %s && chmod +x %s", remotePath, remotePath))
-				return res.Stdout, res.Stderr, res.ExitCode, runErr
-			}()
-			return err
+			defer f.Close()
+			// Stream the local file as the remote session's stdin, so a
+			// remote `cat > <path>` actually receives the bytes. The old
+			// form here built a strings.Reader and threw it away, which
+			// left phase scripts as 0-byte files on the worker — every
+			// phase then `bash`'d an empty script, exited 0 in ~40ms,
+			// and the runner happily reported `ok`. Discovered on the
+			// first live C1 run against claw-staging.local on 2026-05-20.
+			cmd := fmt.Sprintf("cat > %s && chmod +x %s", remotePath, remotePath)
+			res, err := client.RunWith(ctx, cmd, osh.RunOpts{Stdin: f})
+			if err != nil {
+				return fmt.Errorf("upload %s -> %s: transport: %w", localPath, remotePath, err)
+			}
+			if res.ExitCode != 0 {
+				return fmt.Errorf("upload %s -> %s: remote exit=%d stderr=%q",
+					localPath, remotePath, res.ExitCode, res.Stderr)
+			}
+			return nil
 		},
 		Run: func(ctx context.Context, remoteCmd string) (string, string, int, error) {
 			res, err := client.Run(ctx, remoteCmd)
@@ -683,6 +693,22 @@ func walkTar(tw *tar.Writer, root, path string, info os.FileInfo) error {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return err
+	}
+	// If the entry is a symlink, resolve it before deciding dir-vs-file.
+	// Discovered on the first live C1 run: gstack installs skills as
+	// symlinks under ~/.hermes/skills/<name> -> ~/.claude/skills/...,
+	// and os.ReadDir's DirEntry.Info() returns Lstat info (mode includes
+	// ModeSymlink, IsDir() returns false). The old code then tried to
+	// os.Open + io.Copy the symlink-to-dir and crashed with
+	// "tar: read <path>: is a directory". Resolving via os.Stat follows
+	// the link and gives us the underlying file/dir info to tar.
+	if info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := os.Stat(path)
+		if err != nil {
+			// Dangling symlink — skip it; the worker can't use it anyway.
+			return nil
+		}
+		info = resolved
 	}
 	if info.IsDir() {
 		hdr, err := tar.FileInfoHeader(info, "")
