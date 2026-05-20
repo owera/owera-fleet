@@ -33,6 +33,7 @@ Provision a worker by running the multi-phase bootstrap pipeline (phase00..phase
 | `--skip-heartbeat` | Skip phase08 + phase09 heartbeat probe. |
 | `--heartbeat-wait-seconds N` | First-heartbeat wait window (phase08). |
 | `--uid N` | UID for the hermes service account (phase02). Default 502; override when occupied on target. |
+| `--node-label NAME` | Override {{NODE_LABEL}} in the heartbeat plist (phase08). Defaults to host portion of --node. Set for tunnel-routed bootstrap. |
 | `--dry-run` | Pass --dry-run to phase scripts (probe only, no mutations). |
 | `--timeout DUR` | Per-phase timeout (default 10m). |
 | `--quiet` | Suppress stdout; JSONL log still written. |

@@ -61,6 +61,7 @@ var (
 	bwSkipHeartbeat    bool
 	bwHeartbeatWaitSec int
 	bwHermesUID        int
+	bwNodeLabel        string
 )
 
 const (
@@ -151,6 +152,12 @@ func init() {
 		"how long phase08 waits for the first heartbeat tick")
 	bootstrapWorkerCmd.Flags().IntVar(&bwHermesUID, "uid", bwDefaultHermesUID,
 		"UID for the hermes service account on the worker (phase02). Override when the default UID is occupied by another account on the target host (e.g. claw-staging where 502 was taken).")
+	bootstrapWorkerCmd.Flags().StringVar(&bwNodeLabel, "node-label", "",
+		"Override the {{NODE_LABEL}} substituted into the heartbeat plist template (phase08). "+
+			"Defaults to the host portion of --node (e.g. claw1.local). Set this when --node is "+
+			"a tunnel target whose hostname shouldn't be the operator-visible node identity — "+
+			"e.g. `--node hermes@127.0.0.1:22022 --node-label claw-staging.local` writes a "+
+			"heartbeat at ~/.hermes/heartbeat/claw-staging.local even though SSH goes via 127.0.0.1.")
 
 	rootCmd.AddCommand(bootstrapWorkerCmd)
 }
@@ -582,11 +589,18 @@ func buildPhase08Prep(common []string, nodeLabel string) (phasePrep, error) {
 	if err != nil {
 		return phasePrep{}, fmt.Errorf("phase08: read %s: %w", tpl, err)
 	}
-	// {{HERMES_HOME}} and {{NODE_LABEL}} substitution.
+	// {{HERMES_HOME}} and {{NODE_LABEL}} substitution. The label defaults to
+	// the host portion of nodeLabel (e.g. `claw1.local` from `hermes@claw1.local`),
+	// but operators can override via --node-label when the SSH target isn't a
+	// good operator-visible identity for the worker (e.g. tunneled bootstrap
+	// against `hermes@127.0.0.1:22022`; see flag help).
 	rendered := strings.ReplaceAll(string(raw), "{{HERMES_HOME}}", "/Users/"+bwDefaultHermesUser)
-	host := nodeLabel
-	if at := strings.Index(host, "@"); at >= 0 {
-		host = host[at+1:]
+	host := bwNodeLabel
+	if host == "" {
+		host = nodeLabel
+		if at := strings.Index(host, "@"); at >= 0 {
+			host = host[at+1:]
+		}
 	}
 	rendered = strings.ReplaceAll(rendered, "{{NODE_LABEL}}", host)
 
@@ -780,6 +794,7 @@ func bootstrapWorkerSkill() Skill {
 			{Name: "--skip-heartbeat", Description: "Skip phase08 + phase09 heartbeat probe."},
 			{Name: "--heartbeat-wait-seconds N", Description: "First-heartbeat wait window (phase08)."},
 			{Name: "--uid N", Description: "UID for the hermes service account (phase02). Default 502; override when occupied on target."},
+			{Name: "--node-label NAME", Description: "Override {{NODE_LABEL}} in the heartbeat plist (phase08). Defaults to host portion of --node. Set for tunnel-routed bootstrap."},
 			{Name: "--dry-run", Description: "Pass --dry-run to phase scripts (probe only, no mutations)."},
 			{Name: "--timeout DUR", Description: "Per-phase timeout (default 10m)."},
 			{Name: "--quiet", Description: "Suppress stdout; JSONL log still written."},

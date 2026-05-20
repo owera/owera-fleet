@@ -35,6 +35,7 @@ func resetBWFlags() {
 	bwSkipHeartbeat = false
 	bwHeartbeatWaitSec = bwDefaultHeartbeatWait
 	bwHermesUID = bwDefaultHermesUID
+	bwNodeLabel = ""
 }
 
 // TestPhasesDefault_TenInOrder asserts the canonical phase list is
@@ -172,6 +173,83 @@ func TestBuildPhasePrep_HermesUID(t *testing.T) {
 	joined := strings.Join(prep.args, " ")
 	if !strings.Contains(joined, "--uid 503") {
 		t.Errorf("override UID not in args (got: %s)", joined)
+	}
+}
+
+// TestBuildPhase08Prep_NodeLabel confirms that the {{NODE_LABEL}} token
+// in the heartbeat plist template defaults to the host portion of --node
+// (stripping any "user@" prefix), and that --node-label overrides it
+// entirely. Motivation: when bootstrap-worker runs through an SSH tunnel
+// (--node hermes@127.0.0.1:22022), the default would name the heartbeat
+// file "127.0.0.1", forcing a post-bootstrap hand-edit to make it
+// match the worker's real identity. --node-label avoids that.
+func TestBuildPhase08Prep_NodeLabel(t *testing.T) {
+	resetBWFlags()
+	defer resetBWFlags()
+
+	tplDir := t.TempDir()
+	tpl := filepath.Join(tplDir, "heartbeat.plist")
+	if err := os.WriteFile(tpl, []byte("<NODE>{{NODE_LABEL}}</NODE>\n"), 0o644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	cases := []struct {
+		name        string
+		nodeLabel   string // value of nodeLabel passed to buildPhase08Prep
+		override    string // value of bwNodeLabel
+		wantInPlist string
+	}{
+		{
+			name:        "default-strips-user-prefix",
+			nodeLabel:   "hermes@claw1.local",
+			override:    "",
+			wantInPlist: "<NODE>claw1.local</NODE>",
+		},
+		{
+			name:        "override-replaces-host",
+			nodeLabel:   "hermes@127.0.0.1",
+			override:    "claw-staging.local",
+			wantInPlist: "<NODE>claw-staging.local</NODE>",
+		},
+		{
+			name:        "no-user-prefix-passthrough",
+			nodeLabel:   "claw1.local",
+			override:    "",
+			wantInPlist: "<NODE>claw1.local</NODE>",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			resetBWFlags()
+			bwPlistTemplate = tpl
+			bwNodeLabel = tc.override
+
+			prep, err := buildPhase08Prep([]string{"--node", tc.nodeLabel}, tc.nodeLabel)
+			if err != nil {
+				t.Fatalf("buildPhase08Prep: %v", err)
+			}
+			if prep.teardown != nil {
+				defer prep.teardown()
+			}
+
+			var captured string
+			fakeUpload := func(_ context.Context, localPath, _ string) error {
+				captured = localPath
+				return nil
+			}
+			if err := prep.prepare(context.Background(), fakeUpload); err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			data, err := os.ReadFile(captured)
+			if err != nil {
+				t.Fatalf("read rendered plist: %v", err)
+			}
+			if !strings.Contains(string(data), tc.wantInPlist) {
+				t.Errorf("rendered plist missing %q (got: %s)", tc.wantInPlist, string(data))
+			}
+		})
 	}
 }
 
