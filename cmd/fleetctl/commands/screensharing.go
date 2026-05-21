@@ -351,18 +351,21 @@ func scrSharingSudoersStanza() string {
 
 // scrSharingProbeScript is a sudo-free shell snippet that prints a single
 // `listening=yes` or `listening=no` line based on whether TCP/5900 is
-// bound. We use `lsof -nP -iTCP:5900 -sTCP:LISTEN` (present on every
-// supported macOS) and fall back to `netstat -an` so the probe still
-// works if lsof is somehow missing.
+// bound. We prefer `netstat -an` because lsof on macOS hides sockets
+// owned by other users (notably root-owned screensharingd) when invoked
+// without sudo — netstat shows the kernel's full TCP table regardless of
+// caller. lsof remains a fallback for non-macOS hosts that ship netstat
+// in a different shape, but the macOS fleet is the primary target.
 func scrSharingProbeScript() string {
 	return fmt.Sprintf(`port=%d
 listening=no
-if command -v lsof >/dev/null 2>&1; then
-  if lsof -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null | tail -n +2 | grep -q .; then
+if command -v netstat >/dev/null 2>&1; then
+  if netstat -an -p tcp 2>/dev/null | awk -v p=$port '$NF=="LISTEN" && $4 ~ "\\."p"$" {found=1} END{exit !found}'; then
     listening=yes
   fi
-elif command -v netstat >/dev/null 2>&1; then
-  if netstat -an -p tcp 2>/dev/null | awk -v p=$port '$NF=="LISTEN" && $4 ~ "\\."p"$" {found=1} END{exit !found}'; then
+fi
+if [ "$listening" = "no" ] && command -v lsof >/dev/null 2>&1; then
+  if lsof -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null | tail -n +2 | grep -q .; then
     listening=yes
   fi
 fi
