@@ -203,7 +203,16 @@ xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
   # `set -ecurl ...` and a syntax error. Fix: stage the multi-line script
   # as a temp file readable by hermes and invoke it. Discovered on first
   # live C1 run against claw-staging.local on 2026-05-20.
-  tmp_script=$(mktemp -t phase03-installXXXXXX.sh) || {
+  #
+  # Stage under /tmp (world-traversable, sticky) instead of mktemp's
+  # default `-t` location, which on macOS resolves to the caller's
+  # private $TMPDIR (/var/folders/<hash>/T, mode 700). When the admin
+  # account driving bootstrap (e.g. claw0) is *not* the hermes account,
+  # `sudo -u hermes` can't traverse the admin's per-user TMPDIR and the
+  # bash invocation fails with rc=126 "Permission denied". Discovered
+  # on first fresh-node bootstrap of claw0 (admin=claw0 uid=503, hermes
+  # uid=504) on 2026-05-21.
+  tmp_script=$(mktemp /tmp/phase03-installXXXXXX.sh) || {
     rm -f "$tmp_err"
     log_action "hermes_installer" "error" 0 "mktemp (script) failed"
     return 1
