@@ -204,7 +204,7 @@ func makeSwarmRunner(timeout time.Duration) orchestrator.LeafRunner {
 		cmdStr, _ := in.Payload["cmd"].(string)
 		user, _ := in.Payload["user"].(string)
 		host, _ := in.Payload["host"].(string)
-		target := osh.Target{User: user, Host: host}
+		target := osh.Target{User: user, Host: host, Port: osh.DefaultPort}
 
 		dialer := swarmDialer(osh.WithConnectTimeout(timeout))
 		client, err := dialer.Dial(ctx, target)
