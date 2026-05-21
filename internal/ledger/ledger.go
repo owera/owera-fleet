@@ -58,7 +58,9 @@ type Entry struct {
 	Data       json.RawMessage `json:"data,omitempty"`
 	DurationMs int64           `json:"duration_ms,omitempty"`
 	StderrTail string          `json:"stderr_tail,omitempty"`
-	Sig        string          `json:"sig,omitempty"`
+	// StdoutTail is currently populated only by swarm leaves (see cmd/fleetctl/commands/swarm.go); other writers leave it empty.
+	StdoutTail string `json:"stdout_tail,omitempty"`
+	Sig        string `json:"sig,omitempty"`
 }
 
 // Ledger writes and reads signed entries rooted at a directory.
