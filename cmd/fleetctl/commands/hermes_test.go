@@ -18,15 +18,14 @@ import (
 // fakeHermesClient implements RemoteClientWith so we can drive both the
 // audit path (Run) and the sync path (RunWith) with a single fake.
 type fakeHermesClient struct {
-	statusOut    string
-	statusExit   int
-	statusErr    error
-	syncOut      string
-	syncErr      error
-	syncExit     int
-	gotStdinPath string
-	stdinSeen    string
-	closed       bool
+	statusOut  string
+	statusExit int
+	statusErr  error
+	syncOut    string
+	syncErr    error
+	syncExit   int
+	stdinSeen  string
+	closed     bool
 }
 
 func (f *fakeHermesClient) Run(_ context.Context, cmd string) (osh.Result, error) {

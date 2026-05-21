@@ -603,14 +603,14 @@ func buildAuthPayload(auth map[string]string) string {
 // constructed from the closed-set `hermesAuthKeys` and a value we read
 // from the gateway's own config.yaml, never from a user-supplied flag.
 func buildSyncScript(keysOrder []string, model string) string {
-	pattern := "^(" + regexp.QuoteMeta(strings.Join(keysOrder, "|")) + ")="
-	// Fix QuoteMeta over the joined string — we want alternation, not
-	// literal pipes. Rebuild via per-key escape.
+	// Per-key escape so each key is regex-literal but the `|` alternation
+	// stays meta. (Naively QuoteMeta-ing the joined string would escape
+	// the alternation itself.)
 	escaped := make([]string, len(keysOrder))
 	for i, k := range keysOrder {
 		escaped[i] = regexp.QuoteMeta(k)
 	}
-	pattern = "^(" + strings.Join(escaped, "|") + ")="
+	pattern := "^(" + strings.Join(escaped, "|") + ")="
 
 	// Shell-quoted model literal (or empty string for no-op).
 	modelQuoted := shellSingleQuote(model)
