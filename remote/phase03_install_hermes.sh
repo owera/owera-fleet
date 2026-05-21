@@ -20,11 +20,13 @@ set -uo pipefail
 NODE_NAME=""
 DRY_RUN="false"
 PINNED_VERSION=""
+INSTALL_TAG=""
 INSTALL_URL_DEFAULT="https://hermes-agent.nousresearch.com/install.sh"
 INSTALL_URL="$INSTALL_URL_DEFAULT"
 HERMES_USER="hermes"
 HERMES_HOME="/Users/hermes"
 PHASE="phase03_install_hermes"
+PRINT_INSTALL_CMD="false"
 
 usage() {
   cat <<EOF
@@ -37,12 +39,26 @@ Required:
   --pinned-version TAG     Hermes version tag to install (e.g. v0.13.0).
 
 Options:
+  --install-tag TAG        Git tag (CalVer, e.g. v2026.5.7) to pass to the
+                           Nous installer via --branch. The Nous installer
+                           IGNORES HERMES_VERSION env vars — pinning happens
+                           via --branch only. When set, --pinned-version is
+                           used solely for the post-install verification
+                           assertion; the actual install ref comes from this
+                           flag. When unset, the installer defaults to the
+                           main branch (whatever upstream is currently
+                           tagged latest at curl time). The fleetctl runner
+                           resolves this from --pinned-version via the
+                           internal/hermesrelease package.
   --node NAME              Node label for JSONL events. Default: \$(hostname -s)
   --install-url URL        Override the installer URL.
                            Default: $INSTALL_URL_DEFAULT
   --hermes-user USER       Override the unprivileged user. Default: hermes
   --hermes-home PATH       Override the user home. Default: /Users/hermes
   --dry-run                Probe only; no installer pipeline executes.
+  --print-install-cmd      Print the curl|bash command that WOULD run and exit 0.
+                           Does not invoke sudo / write the seed file. Used by
+                           live-verification harnesses to confirm pinning.
   -h, --help               Show this help.
 
 Exit codes:
@@ -72,8 +88,13 @@ while [ $# -gt 0 ]; do
     --hermes-home)
       [ $# -ge 2 ] || { printf 'phase03: --hermes-home requires a value\n' >&2; exit 6; }
       HERMES_HOME="$2"; shift 2 ;;
+    --install-tag)
+      [ $# -ge 2 ] || { printf 'phase03: --install-tag requires a value\n' >&2; exit 6; }
+      INSTALL_TAG="$2"; shift 2 ;;
     --dry-run)
       DRY_RUN="true"; shift ;;
+    --print-install-cmd)
+      PRINT_INSTALL_CMD="true"; shift ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -169,16 +190,33 @@ probe_already_pinned() {
   return 1
 }
 
+build_installer_cmd() {
+  # Print the curl|bash one-liner that run_installer would execute. The
+  # Nous installer ignores HERMES_VERSION entirely (zero matches in its
+  # current install.sh); pinning happens via `--branch <git-tag>`. So
+  # when --install-tag is supplied we append --branch; when it's empty
+  # the installer falls back to whatever main resolves to at curl time.
+  # We still set HERMES_VERSION as a hint for any future installer that
+  # might honour it — harmless today, and makes the intent visible in
+  # `ps`.
+  local branch_arg=""
+  if [ -n "$INSTALL_TAG" ]; then
+    branch_arg=" --branch $INSTALL_TAG"
+  fi
+  printf 'curl -fsSL %s | HERMES_VERSION=%s bash -s -- --skip-setup%s' \
+    "$INSTALL_URL" "$PINNED_VERSION" "$branch_arg"
+}
+
 run_installer() {
   local start end dur tmp_err rc tail installer remote_cmd
   start=$(now_ms)
   if [ "$DRY_RUN" = "true" ]; then
     end=$(now_ms); dur=$((end - start))
-    log_action "hermes_installer" "skipped" "$dur" "dry-run: would curl|bash installer at $PINNED_VERSION"
+    log_action "hermes_installer" "skipped" "$dur" "dry-run: would $(build_installer_cmd)"
     return 0
   fi
 
-  installer='curl -fsSL '"$INSTALL_URL"' | HERMES_VERSION='"$PINNED_VERSION"' bash -s -- --skip-setup'
+  installer=$(build_installer_cmd)
   # shellcheck disable=SC2016  # literal $HOME / $PATH must reach the remote sh.
   remote_cmd='set -e
 '"$installer"'
@@ -303,7 +341,13 @@ seed_pinned_version_file() {
 # Main
 # ---------------------------------------------------------------------------
 
-info "node=$NODE_NAME pinned=$PINNED_VERSION user=$HERMES_USER dry_run=$DRY_RUN"
+info "node=$NODE_NAME pinned=$PINNED_VERSION tag=${INSTALL_TAG:-<unpinned-main>} user=$HERMES_USER dry_run=$DRY_RUN"
+
+if [ "$PRINT_INSTALL_CMD" = "true" ]; then
+  build_installer_cmd
+  printf '\n'
+  exit 0
+fi
 
 if ! probe_xcode_clt; then
   log_action "summary" "error" 0 "Xcode CLT precondition failed"

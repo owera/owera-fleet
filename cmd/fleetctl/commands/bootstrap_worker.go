@@ -36,6 +36,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/owera/owera-fleet/internal/bootstrap"
+	"github.com/owera/owera-fleet/internal/hermesrelease"
 	"github.com/owera/owera-fleet/internal/log"
 	osh "github.com/owera/owera-fleet/internal/ssh"
 )
@@ -162,6 +163,30 @@ func init() {
 	rootCmd.AddCommand(bootstrapWorkerCmd)
 }
 
+// bwInstallTagResolver is the function bootstrap-worker uses to
+// translate a semver pin (e.g. "v0.13.0") into the matching Nous
+// Research CalVer git tag (e.g. "v2026.5.7") that phase03 passes to
+// the installer as `--branch <tag>`.
+//
+// Defaults to a real hermesrelease.Resolver wired against ~/.hermes/
+// PINNED_VERSION_TAG + the `gh` CLI. Tests override this var with a
+// stub that returns a canned mapping without shelling out to gh.
+//
+// Returning an empty tag with a nil error tells the caller "do not pin
+// — fall back to whatever the installer's default branch resolves to".
+// That path is exercised when --pinned-version is unset (partial
+// bootstrap runs that don't hit phase03/phase09).
+var bwInstallTagResolver = func(ctx context.Context, semver string) (string, error) {
+	if semver == "" {
+		return "", nil
+	}
+	r, err := hermesrelease.Default()
+	if err != nil {
+		return "", fmt.Errorf("bootstrap-worker: hermesrelease.Default: %w", err)
+	}
+	return r.Resolve(ctx, semver)
+}
+
 // bwOrchestratorFactory is overridable in tests.
 var bwOrchestratorFactory = func(target osh.Target, timeout time.Duration) (*bootstrap.Orchestrator, error) {
 	dialer := osh.NewDialer(osh.WithConnectTimeout(timeout))
@@ -254,6 +279,24 @@ func runBootstrapWorker(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Translate the semver pin into the CalVer git tag the Nous
+	// installer accepts via `--branch`. We only do this when at least
+	// one selected phase actually needs it (phase03), so partial runs
+	// like `--phase phase00_brew_baseline.sh` don't pay the GitHub
+	// round-trip. A translation failure is fatal — the only purpose of
+	// pinning is to install deterministically, and a non-pinned install
+	// would silently drift onto whatever main resolves to today.
+	var installTag string
+	if pinned != "" && phasesNeedInstallTag(bwPhasesToRun()) {
+		installTag, err = bwInstallTagResolver(ctx, pinned)
+		if err != nil {
+			return fmt.Errorf("bootstrap-worker: resolve install tag for %s: %w", pinned, err)
+		}
+		if installTag == "" {
+			return fmt.Errorf("bootstrap-worker: resolver returned empty tag for %s (pin would be ignored)", pinned)
+		}
+	}
+
 	phases := bwPhasesToRun()
 	if len(phases) == 0 {
 		return errors.New("bootstrap-worker: no phase scripts selected")
@@ -263,7 +306,7 @@ func runBootstrapWorker(cmd *cobra.Command, _ []string) error {
 	overall := log.ResultOK
 
 	for _, phase := range phases {
-		prep, perr := buildPhasePrep(phase, nodeLabel, pinned)
+		prep, perr := buildPhasePrep(phase, nodeLabel, pinned, installTag)
 		if perr != nil {
 			return fmt.Errorf("bootstrap-worker: %s prep: %w", phase, perr)
 		}
@@ -383,9 +426,27 @@ func resolvePinnedVersion() (string, error) {
 	return "", nil
 }
 
+// phasesNeedInstallTag reports whether any selected phase actually
+// needs the resolved CalVer git tag. Today that's just phase03 — the
+// verify phase (phase09) compares against the human semver in
+// PINNED_VERSION, not the git tag.
+func phasesNeedInstallTag(phases []string) bool {
+	for _, p := range phases {
+		if p == "phase03_install_hermes.sh" {
+			return true
+		}
+	}
+	return false
+}
+
 // buildPhasePrep returns the per-phase arg vector + any pre-execution
 // staging steps needed (uploading tarballs, plists, pubkeys, etc.).
-func buildPhasePrep(phase, nodeLabel, pinnedVersion string) (phasePrep, error) {
+//
+// installTag is the CalVer git tag (e.g. "v2026.5.7") corresponding to
+// the semver pinnedVersion (e.g. "v0.13.0"). phase03 passes it to the
+// Nous installer via `--branch <tag>`. Empty means "no pin" (installer
+// uses its default branch); phase03 then logs an unpinned install.
+func buildPhasePrep(phase, nodeLabel, pinnedVersion, installTag string) (phasePrep, error) {
 	common := []string{"--node", nodeLabel}
 	if bwDryRun {
 		common = append(common, "--dry-run")
@@ -413,6 +474,13 @@ func buildPhasePrep(phase, nodeLabel, pinnedVersion string) (phasePrep, error) {
 			return phasePrep{}, errors.New("phase03 requires --pinned-version or a non-empty --pinned-version-file")
 		}
 		args := append([]string{"--pinned-version", pinnedVersion}, common...)
+		if installTag != "" {
+			// The CalVer git tag is the only mechanism that actually
+			// pins the install (HERMES_VERSION is a phantom env var
+			// the installer ignores). Plumbing it through here is the
+			// fix for issue #52.
+			args = append(args, "--install-tag", installTag)
+		}
 		return phasePrep{args: args}, nil
 
 	case "phase04_seed_config.sh":

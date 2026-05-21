@@ -124,7 +124,7 @@ func TestBuildPhasePrep_ArgShape(t *testing.T) {
 			if tc.setup != nil {
 				tc.setup(t)
 			}
-			prep, err := buildPhasePrep(tc.phase, "u@h", "")
+			prep, err := buildPhasePrep(tc.phase, "u@h", "", "")
 			if tc.expectErr {
 				if err == nil {
 					t.Fatalf("%s: expected error, got nil (args=%v)", tc.phase, prep.args)
@@ -155,7 +155,7 @@ func TestBuildPhasePrep_HermesUID(t *testing.T) {
 	defer resetBWFlags()
 
 	// Default UID: omitted from args.
-	prep, err := buildPhasePrep("phase02_create_user.sh", "u@h", "")
+	prep, err := buildPhasePrep("phase02_create_user.sh", "u@h", "", "")
 	if err != nil {
 		t.Fatalf("default-uid: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBuildPhasePrep_HermesUID(t *testing.T) {
 	// Override UID: propagates as "--uid 503".
 	resetBWFlags()
 	bwHermesUID = 503
-	prep, err = buildPhasePrep("phase02_create_user.sh", "u@h", "")
+	prep, err = buildPhasePrep("phase02_create_user.sh", "u@h", "", "")
 	if err != nil {
 		t.Fatalf("override-uid: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestBuildPhasePrep_PinnedVersionPropagates(t *testing.T) {
 	defer resetBWFlags()
 
 	for _, phase := range []string{"phase03_install_hermes.sh", "phase09_verify.sh"} {
-		prep, err := buildPhasePrep(phase, "u@h", "v9.9.9")
+		prep, err := buildPhasePrep(phase, "u@h", "v9.9.9", "")
 		if err != nil {
 			t.Fatalf("%s: %v", phase, err)
 		}
@@ -268,6 +268,54 @@ func TestBuildPhasePrep_PinnedVersionPropagates(t *testing.T) {
 		if !strings.Contains(joined, "--pinned-version v9.9.9") {
 			t.Errorf("%s: pinned version not in args (got: %s)", phase, joined)
 		}
+	}
+}
+
+// TestBuildPhasePrep_Phase03InstallTagPropagates is the regression
+// guard for issue #52. When a non-empty installTag is supplied,
+// phase03's args MUST include `--install-tag <tag>` so the bash
+// fragment passes `--branch <tag>` to the Nous installer. Without this
+// the installer ignores HERMES_VERSION and pins by timing coincidence
+// rather than by operator intent (claw-staging got v0.14.0 instead of
+// the v0.13.0 the operator asked for).
+//
+// phase09 (verify) deliberately does NOT receive --install-tag — it
+// compares against the human semver in PINNED_VERSION, not the tag.
+func TestBuildPhasePrep_Phase03InstallTagPropagates(t *testing.T) {
+	resetBWFlags()
+	defer resetBWFlags()
+
+	prep, err := buildPhasePrep("phase03_install_hermes.sh", "u@h", "v0.13.0", "v2026.5.7")
+	if err != nil {
+		t.Fatalf("phase03: %v", err)
+	}
+	joined := strings.Join(prep.args, " ")
+	if !strings.Contains(joined, "--pinned-version v0.13.0") {
+		t.Errorf("phase03 args missing --pinned-version v0.13.0 (got: %s)", joined)
+	}
+	if !strings.Contains(joined, "--install-tag v2026.5.7") {
+		t.Errorf("phase03 args missing --install-tag v2026.5.7 (got: %s)", joined)
+	}
+
+	// Empty install tag: --install-tag must NOT appear (a partial run
+	// that doesn't have network access to gh should still be able to
+	// stage phase03 — phase03 itself will warn that it's installing
+	// from main).
+	prep, err = buildPhasePrep("phase03_install_hermes.sh", "u@h", "v0.13.0", "")
+	if err != nil {
+		t.Fatalf("phase03 (no tag): %v", err)
+	}
+	if strings.Contains(strings.Join(prep.args, " "), "--install-tag") {
+		t.Errorf("empty install tag should not emit --install-tag (got: %v)", prep.args)
+	}
+
+	// phase09 must NOT receive --install-tag even when one is supplied.
+	prep, err = buildPhasePrep("phase09_verify.sh", "u@h", "v0.13.0", "v2026.5.7")
+	if err != nil {
+		t.Fatalf("phase09: %v", err)
+	}
+	if strings.Contains(strings.Join(prep.args, " "), "--install-tag") {
+		t.Errorf("phase09 must not receive --install-tag (got: %v)", prep.args)
 	}
 }
 
