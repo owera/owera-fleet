@@ -230,6 +230,10 @@ func makeSwarmRunner(timeout time.Duration) orchestrator.LeafRunner {
 			Action:     "ssh:" + target.String(),
 			Result:     ledger.ResultOK,
 			DurationMs: durMs,
+			// Capture leaf stdout so scatter-gather workloads (e.g. JSON
+			// benchmark lines) can be reassembled from the parent ledger
+			// rather than discarded. Truncation matches the StderrTail policy.
+			StdoutTail: truncateAction(res.Stdout),
 		}
 		if res.ExitCode != 0 {
 			entry.Result = ledger.ResultError
