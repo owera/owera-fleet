@@ -232,12 +232,13 @@ func makeSwarmRunner(timeout time.Duration) orchestrator.LeafRunner {
 			DurationMs: durMs,
 			// Capture leaf stdout so scatter-gather workloads (e.g. JSON
 			// benchmark lines) can be reassembled from the parent ledger
-			// rather than discarded. Truncation matches the StderrTail policy.
-			StdoutTail: truncateAction(res.Stdout),
+			// rather than discarded. 4 KB last-N-bytes tail matching
+			// delegate.go's stderr policy.
+			StdoutTail: tailBytes(res.Stdout, 4096),
 		}
 		if res.ExitCode != 0 {
 			entry.Result = ledger.ResultError
-			entry.StderrTail = truncateAction(res.Stderr)
+			entry.StderrTail = tailBytes(res.Stderr, 4096)
 		}
 		return []ledger.Entry{entry}, nil
 	}
